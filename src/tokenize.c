@@ -537,6 +537,18 @@ i64 sqlite3GetToken(const unsigned char *z, int *tokenType){
       return i;
     }
     case CC_KYWD0: {
+      #ifdef SQLITE_ENABLE_MATCHERTEXT
+      if ( (z[0]|0x20)=='m' && z[1]=='\'' ){
+        i = sqlite3MatchertextEnd(z+2);
+        if( i>0 && z[2+i]=='\'' ){
+          *tokenType = TK_MTSTRING;
+          return i+3;
+        }
+        *tokenType = TK_ILLEGAL;
+        return 2;
+      }
+      #endif
+
       if( aiClass[z[1]]>CC_KYWD ){ i = 1;  break; }
       for(i=2; aiClass[z[i]]<=CC_KYWD; i++){}
       if( IdChar(z[i]) ){

@@ -1,1 +1,138 @@
+# SQLite is developed in Fossil, which ignores through
+# .fossil-settings/ignore-glob and needs almost nothing there because the
+# upstream workflow builds out of tree: run configure from an empty directory
+# and no build product ever lands beside the source. This file exists for the
+# in-tree builds a Git checkout invites, and covers what `make clean` removes
+# plus the configure outputs it deliberately keeps.
+#
+# Patterns are anchored with a leading slash wherever a generated file at the
+# root shares its name with a tracked file elsewhere, such as parse.y, shell.c
+# and lempar.c.
+
 **/.DS_Store
+
+# --- configure output -------------------------------------------------------
+/Makefile
+/config.log
+/sqlite_cfg.h
+/sqlite3.pc
+/.main.mk.checks
+/jimsh
+/has_tclsh*
+/tcl-env.sh
+
+# --- code generators built during the build ---------------------------------
+/lemon
+/mkkeywordhash
+/mksourceid
+/src-verify
+
+# --- generated sources and headers ------------------------------------------
+/lempar.c
+/parse.*
+/fts5parse.*
+/opcodes.c
+/opcodes.h
+/keywordhash.h
+/pragma.h
+/ctime.c
+/shell.c
+/sqlite3.c
+/sqlite3.h
+/sqlite3ext.h
+/sqlite3session.h
+/sqlite3rc.h
+/sqlite3.def
+/fts5.c
+/fts5.h
+/tclsqlite3.c
+/tclsqlite-ex.c
+/tsrc/
+/.target_source
+
+# --- objects and libraries --------------------------------------------------
+*.o
+*.obj
+*.lo
+*.la
+*.exp
+*.da
+*.bb
+*.bbg
+gmon.*
+/.libs/
+/.deps/
+/libsqlite3.a
+/libsqlite3.so*
+/libsqlite3.dylib
+/libsqlite3.dll
+/libsqlite3.lib
+/libtclsqlite3.*
+/pkgIndex.tcl
+
+# --- shells and test programs -----------------------------------------------
+/sqlite3
+/sqlite3d
+/tclsqlite3
+/testfixture
+/sqlite3_analyzer
+/sqlite3_expert
+/sqlite3_rsync
+/sqlite3_checker
+/sqldiff
+/dbhash
+/dbdump
+/dbtotxt
+/showdb
+/showjournal
+/showshm
+/showstat4
+/showwal
+/speedtest1
+/wordcount
+/changeset
+/version-info
+/index_usage
+/kvtest
+/startup
+/scrub
+/atrc
+/loadfts
+/rbu
+/mptester
+/srcck1
+/fts3view
+/rollback-test
+/LogEst
+/fp-speed-1
+/fp-speed-2
+/threadtest3
+/threadtest5
+
+# --- fuzzers ----------------------------------------------------------------
+/fuzzershell
+/fuzzcheck
+/fuzzcheck-asan
+/fuzzcheck-ubsan
+/ossshell
+/dbfuzz
+/dbfuzz2
+/dbfuzz2-dir/
+/sessionfuzz
+/changesetfuzz
+
+# --- test output ------------------------------------------------------------
+/testrunner*
+/testrun_*/
+/testdir*/
+/omittest*/
+
+# --- packaging --------------------------------------------------------------
+/sqlite*.tar.gz
+/*.vsix
+
+# --- platform debris --------------------------------------------------------
+*.dSYM/
+/conftest*
+.idea
+**/*.dylib

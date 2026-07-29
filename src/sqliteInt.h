@@ -5976,4 +5976,8 @@ sqlite3_uint64 sqlite3Hwtime(void);
 # define IS_STMT_SCANSTATUS(db) 0
 #endif
 
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+i64 sqlite3MatchertextEnd(const unsigned char*);
+#endif
+
 #endif /* SQLITEINT_H */
