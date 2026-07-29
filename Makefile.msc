@@ -1291,7 +1291,7 @@ LIBOBJS0 = vdbe.lo parse.lo alter.lo analyze.lo attach.lo auth.lo \
          fts5.lo \
          func.lo global.lo hash.lo \
          icu.lo insert.lo json.lo legacy.lo loadext.lo \
-         main.lo malloc.lo mem0.lo mem1.lo mem2.lo mem3.lo mem5.lo \
+         main.lo malloc.lo matchertext.lo mem0.lo mem1.lo mem2.lo mem3.lo mem5.lo \
          memdb.lo memjournal.lo \
          mutex.lo mutex_noop.lo mutex_unix.lo mutex_w32.lo \
          notify.lo opcodes.lo os.lo os_kv.lo os_unix.lo os_win.lo \
@@ -1363,6 +1363,7 @@ SRC00 = \
   $(TOP)\src\loadext.c \
   $(TOP)\src\main.c \
   $(TOP)\src\malloc.c \
+  $(TOP)\src\matchertext.c \
   $(TOP)\src\mem0.c \
   $(TOP)\src\mem1.c \
   $(TOP)\src\mem2.c \
@@ -1547,6 +1548,7 @@ TESTSRC = \
   $(TOP)\src\test_intarray.c \
   $(TOP)\src\test_journal.c \
   $(TOP)\src\test_malloc.c \
+  $(TOP)\src\test_matchertext.c \
   $(TOP)\src\test_md5.c \
   $(TOP)\src\test_multiplex.c \
   $(TOP)\src\test_mutex.c \
@@ -2122,6 +2124,9 @@ main.lo:	$(TOP)\src\main.c $(HDR)
 
 malloc.lo:	$(TOP)\src\malloc.c $(HDR)
 	$(LTCOMPILE) $(CORE_COMPILE_OPTS) -c $(TOP)\src\malloc.c
+
+matchertext.lo:	$(TOP)\src\matchertext.c $(HDR)
+	$(LTCOMPILE) $(CORE_COMPILE_OPTS) -c $(TOP)\src\matchertext.c
 
 mem0.lo:	$(TOP)\src\mem0.c $(HDR)
 	$(LTCOMPILE) $(CORE_COMPILE_OPTS) -c $(TOP)\src\mem0.c

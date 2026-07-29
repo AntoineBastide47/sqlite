@@ -465,6 +465,7 @@ set flist {
 
    parse.c
 
+   matchertext.c
    tokenize.c
    complete.c
 

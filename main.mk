@@ -531,7 +531,7 @@ LIBOBJS0 = alter.o analyze.o attach.o auth.o \
          fts5.o \
          func.o global.o hash.o \
          icu.o insert.o json.o legacy.o loadext.o \
-         main.o malloc.o mem0.o mem1.o mem2.o mem3.o mem5.o \
+         main.o malloc.o matchertext.o mem0.o mem1.o mem2.o mem3.o mem5.o \
          memdb.o memjournal.o \
          mutex.o mutex_noop.o mutex_unix.o mutex_w32.o \
          notify.o opcodes.o os.o os_kv.o os_unix.o os_win.o \
@@ -595,6 +595,7 @@ SRC = \
   $(TOP)/src/loadext.c \
   $(TOP)/src/main.c \
   $(TOP)/src/malloc.c \
+  $(TOP)/src/matchertext.c \
   $(TOP)/src/mem0.c \
   $(TOP)/src/mem1.c \
   $(TOP)/src/mem2.c \
@@ -744,6 +745,7 @@ TESTSRC = \
   $(TOP)/src/test_intarray.c \
   $(TOP)/src/test_journal.c \
   $(TOP)/src/test_malloc.c \
+  $(TOP)/src/test_matchertext.c \
   $(TOP)/src/test_md5.c \
   $(TOP)/src/test_multiplex.c \
   $(TOP)/src/test_mutex.c \
@@ -1253,6 +1255,9 @@ main.o:	$(TOP)/src/main.c $(DEPS_OBJ_COMMON)
 
 malloc.o:	$(TOP)/src/malloc.c $(DEPS_OBJ_COMMON)
 	$(T.cc.sqlite) -c $(TOP)/src/malloc.c
+
+matchertext.o:	$(TOP)/src/matchertext.c $(DEPS_OBJ_COMMON)
+	$(T.cc.sqlite) -c $(TOP)/src/matchertext.c
 
 mem0.o:	$(TOP)/src/mem0.c $(DEPS_OBJ_COMMON)
 	$(T.cc.sqlite) -c $(TOP)/src/mem0.c
@@ -2534,3 +2539,13 @@ show-variables:
 	@echo "B.cc        = $(B.cc)"
 	@echo "T.cc        = $(T.cc)"
 	@echo "T.cc.sqlite = $(T.cc.sqlite)"
+
+matchertext: clean
+	@LDFLAGS="-L/opt/homebrew/lib" ./configure --dev --with-tcl=/opt/homebrew/lib
+	@$(MAKE) tclextension-install OPTS="-DSQLITE_ENABLE_MATCHERTEXT"
+	@LDFLAGS="-L/opt/homebrew/lib" $(MAKE) devtest OPTS="-DSQLITE_ENABLE_MATCHERTEXT"
+
+no-matchertext: clean
+	@LDFLAGS="-L/opt/homebrew/lib" ./configure --dev --with-tcl=/opt/homebrew/lib
+	@$(MAKE) tclextension-install
+	@LDFLAGS="-L/opt/homebrew/lib" $(MAKE) devtest
