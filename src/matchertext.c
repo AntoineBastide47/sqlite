@@ -147,12 +147,17 @@ int sqlite3MatchertextVerify(const unsigned char *z, i64 n){
 }
 
 /*
-** FINDEMBEDEND.  On entry z[0] is the opener of an embedding "o m c" and the
-** text is zero-terminated.  Locate c by matcher balance and return the total
-** length of the embedding, so that the embedded value m is the nUsed-2 bytes
-** at z[1] where nUsed is the return value.  Return 0 if no embedding ends
-** here, that is if the balance never returns to the level of z[0], if a
-** closer of the wrong kind arrives, or if the text ends first.
+** FINDEMBEDEND.  If z[0] opens an embedding "o m c" in zero-terminated text,
+** locate c by matcher balance and return the total length of the embedding,
+** so that the embedded value m is the nUsed-2 bytes at z[1] where nUsed is
+** the return value.  Return 0 if no embedding ends here, that is if z[0] is
+** not an opener at all, if the balance never returns to the level of z[0], if
+** a closer of the wrong kind arrives, or if the text ends first.
+**
+** Deciding whether z[0] opens an embedding is left here rather than asked of
+** the caller, so that the matcher pairs stay written down in exactly one
+** place.  A caller that had to test for an opener itself would be a second
+** copy of the configuration, free to drift from this one.
 **
 ** The scan of m begins one byte past the opener, and the byte that first
 ** drives the depth below zero is exactly the terminating closer.  This is the
@@ -172,7 +177,7 @@ i64 sqlite3MatchertextEnd(const unsigned char *z){
 
   assert( z!=0 );
   k = mtClass(z[0]);
-  assert( k>0 );  /* Caller has established that z[0] opens an embedding */
+  if( k<=0 ) return 0;
 
   /* Anything other than a clean return to depth zero means the value is not
   ** matchertext, or the text ran out with openers still pending. */

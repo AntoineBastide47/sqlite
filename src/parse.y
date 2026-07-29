@@ -1192,6 +1192,14 @@ expr(A) ::= nm(X) DOT nm(Y) DOT nm(Z). {
 }
 term(A) ::= NULL|FLOAT|BLOB(X). {A=tokenExpr(pParse,@X,X); /*A-overwrites-X*/}
 term(A) ::= STRING(X).          {A=tokenExpr(pParse,@X,X); /*A-overwrites-X*/}
+%ifdef SQLITE_ENABLE_MATCHERTEXT
+term(A) ::= MTSTRING(X). {
+  assert( X.n>=5 );        /* The shortest literal is M'()' */
+  X.z += 3;
+  X.n -= 5;
+  A = sqlite3ExprAlloc(pParse->db, TK_STRING, &X, 0);
+}
+%endif SQLITE_ENABLE_MATCHERTEXT
 term(A) ::= INTEGER(X). {
   int iValue;
   if( sqlite3GetInt32(X.z, &iValue)==0 ){
