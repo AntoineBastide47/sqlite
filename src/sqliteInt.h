@@ -5978,6 +5978,7 @@ sqlite3_uint64 sqlite3Hwtime(void);
 
 #ifdef SQLITE_ENABLE_MATCHERTEXT
 i64 sqlite3MatchertextEnd(const unsigned char*);
+int sqlite3MatchertextVerify(const unsigned char*, i64);
 #endif
 
 #endif /* SQLITEINT_H */

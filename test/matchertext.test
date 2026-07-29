@@ -1,0 +1,466 @@
+# 2026 July 29
+#
+# The author disclaims copyright to this source code.  In place of
+# a legal notice, here is a blessing:
+#
+#    May you do good and not evil.
+#    May you find forgiveness for yourself and forgive others.
+#    May you share freely, never taking more than you give.
+#
+#***********************************************************************
+# Tests for the matchertext literal M'(value)' and the scanner behind it.
+#
+# The file is organized by layer, because a failure means something different
+# at each one:
+#
+#   matchertext-1  the scanner, VERIFY and FINDEMBEDEND called directly
+#   matchertext-2  the tokenizer, where a literal begins and ends
+#   matchertext-3  the parser, which positions accept the new terminal
+#   matchertext-4  the value, delivered verbatim as data
+#   matchertext-5  backward compatibility, text that parsed before
+#
+# The scanner tests come from a cross-language suite that checks the same C
+# code against an independent Go implementation.  That comparison stays where
+# it is, since it needs the other implementation; what moved here are the
+# cases whose expected answers are written out by hand and belong beside the
+# code they describe.
+#
+# Everything requires SQLITE_ENABLE_MATCHERTEXT.  Without it there is no
+# literal, no scanner, and no test commands, so the file skips itself.
+
+set testdir [file dirname $argv0]
+source $testdir/tester.tcl
+set testprefix matchertext
+
+ifcapable !matchertext {
+  finish_test
+  return
+}
+
+#-------------------------------------------------------------------------
+# 1.*: The scanner on its own.
+#
+# VERIFY decides membership in the matchertext language.  It has no SQL
+# surface, since it belongs to the write path where a caller checks a value
+# before placing it in a hole, so these go through the test command.
+
+# 1.1: valid matchertext
+foreach {tn val} {
+  1  {}
+  2  {hello world}
+  3  {(a)}
+  4  {[a]}
+  5  {{a}}
+  6  {((a))}
+  7  {([{}])}
+  8  {a(b)c[d]e{f}g}
+  9  {()[]{}}
+} {
+  do_test 1.1.$tn { sqlite3_matchertext_verify $val } 1
+}
+
+# 1.2: angle brackets are not matchers, so they constrain nothing.  They are
+# used unmatched as inequality operators far too often to include.
+do_test 1.2.1 { sqlite3_matchertext_verify {a < b > c} } 1
+do_test 1.2.2 { sqlite3_matchertext_verify {a > b < c} } 1
+
+# 1.3: the payloads that motivate the exercise carry no matchers at all, so
+# they are ordinary matchertext.  Nothing about them is treated as special.
+do_test 1.3.1 { sqlite3_matchertext_verify {' OR '1'='1} } 1
+do_test 1.3.2 { sqlite3_matchertext_verify {x' OR 1=1 --} } 1
+do_test 1.3.3 { sqlite3_matchertext_verify {'; DROP TABLE users; --} } 1
+do_test 1.3.4 { sqlite3_matchertext_verify {<script>alert(1)</script>} } 1
+
+# 1.4: unmatched matchers, in either direction
+foreach {tn val} {
+  1  {(}
+  2  {)}
+  3  {)(}
+  4  {a)b}
+  5  {f(x}
+  6  {smile :]}
+} {
+  do_test 1.4.$tn { sqlite3_matchertext_verify $val } 0
+}
+
+# 1.5: paired, but with a closer of the wrong kind
+do_test 1.5.1 { sqlite3_matchertext_verify {(]} } 0
+do_test 1.5.2 { sqlite3_matchertext_verify {([)]} } 0
+do_test 1.5.3 { sqlite3_matchertext_verify {([a)]} } 0
+
+# 1.6: an LDAP filter breakout is rejected rather than embedded, which is the
+# other of the two ways containment can happen
+do_test 1.6.1 { sqlite3_matchertext_verify {*)(uid=*} } 0
+
+# 1.7: zero bytes are ordinary nonmatchers.  VERIFY takes an explicit length
+# for exactly this reason.
+do_test 1.7.1 {
+  sqlite3_matchertext_verify [binary format a1a1a3 "a" "\x00" "(b)"]
+} 1
+do_test 1.7.2 {
+  sqlite3_matchertext_verify [binary format a1a1a2 "a" "\x00" "(b"]
+} 0
+
+# 1.8: multi-byte UTF-8 is scanned safely, because every byte of a multi-byte
+# sequence is at or above 0x80 and no matcher is
+do_test 1.8.1 { sqlite3_matchertext_verify "caf\xc3\xa9 (na\xc3\xafve)" } 1
+do_test 1.8.2 { sqlite3_matchertext_verify "caf\xc3\xa9 (na\xc3\xafve" } 0
+
+# 1.9: U+FF3B FULLWIDTH LEFT SQUARE BRACKET is not an ASCII matcher and so
+# passes.  It normalizes to a lone "[" under NFKC.  The caller must therefore
+# present the value already canonicalized; this records the boundary of what
+# the scanner can be responsible for.
+do_test 1.9.1 { sqlite3_matchertext_verify "\xef\xbc\xbb" } 1
+
+# 1.10: FINDEMBEDEND locates the closer by balance.  The result counts both
+# delimiters, so the value is the result minus two.
+foreach {tn text res} {
+  1   {()}              2
+  2   {(a)}             3
+  3   {((a))}           5
+  4   {[a]}             3
+  5   {{a}}             3
+  6   {([{}])}          6
+  7   {(a)bcd}          3
+  8   {(a)'}            3
+} {
+  do_test 1.10.$tn { sqlite3_matchertext_end $text } $res
+}
+
+# 1.11: the value may hold anything at all, including the host's own
+# terminators, because the end is found by balance and not by scanning
+do_test 1.11.1 { sqlite3_matchertext_end {(' OR '1'='1)} } 13
+do_test 1.11.2 { sqlite3_matchertext_end {('; DROP TABLE t; --)} } 21
+
+# 1.12: the first closer not matched from within ends the embedding, so a
+# later one lies outside it
+do_test 1.12.1 { sqlite3_matchertext_end {(a)b)} } 3
+
+# 1.13: rejections.  Each fails closed: no embedding ends here.
+#
+# Written with quoted strings rather than braces, because several of these
+# values carry an unmatched brace and so cannot be brace quoted in TCL.
+foreach {tn text} [list \
+  1  "(a]b)"   \
+  2  "(\}"     \
+  3  "(abc"    \
+  4  "(a(b"    \
+  5  "(\[)\]"  \
+  6  "("       \
+  7  "abc"     \
+  8  ")a("     \
+  9  ""        \
+] {
+  do_test 1.13.$tn { sqlite3_matchertext_end $text } 0
+}
+
+# 1.14: the depth limit.  Input nested more deeply is rejected rather than
+# truncated or accepted, so the failure stays closed.
+#
+# The budget is spent on the region actually scanned.  VERIFY sees the whole
+# string and counts every level.  FINDEMBEDEND begins one byte past the
+# opener, since the caller has already consumed that delimiter, so an
+# embedding whose value sits at the limit has total nesting of limit+1.
+set MTDEPTH 1000
+proc mt_nest {d} { return "[string repeat ( $d][string repeat ) $d]" }
+
+do_test 1.14.1 { sqlite3_matchertext_verify [mt_nest $MTDEPTH] } 1
+do_test 1.14.2 { sqlite3_matchertext_verify [mt_nest [expr $MTDEPTH+1]] } 0
+do_test 1.14.3 {
+  sqlite3_matchertext_end [mt_nest [expr $MTDEPTH+1]]
+} [expr 2*($MTDEPTH+1)]
+do_test 1.14.4 {
+  sqlite3_matchertext_end [mt_nest [expr $MTDEPTH+2]]
+} 0
+
+#-------------------------------------------------------------------------
+# 2.*: The tokenizer.
+#
+# A literal is M, a quote, a balanced embedding, and a quote.  What matters is
+# where the token ends, since that is the boundary an attacker would have to
+# escape.
+
+# 2.1: the literal is one token, and what follows it is separate
+do_test 2.1.1 { execsql {SELECT M'(abc)'} } {abc}
+do_test 2.1.2 { execsql {SELECT M'(abc)' || 'def'} } {abcdef}
+do_test 2.1.3 { execsql {SELECT M'(a)', M'(b)'} } {a b}
+
+# 2.2: the prefix is case insensitive, matching every other keyword
+do_test 2.2.1 { execsql {SELECT m'(abc)'} } {abc}
+do_test 2.2.2 { execsql {SELECT M'(abc)' = m'(abc)'} } {1}
+
+# 2.3: all three matcher pairs delimit
+do_test 2.3.1 { execsql {SELECT M'(abc)'} } {abc}
+do_test 2.3.2 { execsql {SELECT M'[abc]'} } {abc}
+do_test 2.3.3 { execsql {SELECT M'{abc}'} } {abc}
+
+# 2.4: an empty value is a value
+do_test 2.4.1 { execsql {SELECT M'()' = ''} } {1}
+do_test 2.4.2 { execsql {SELECT length(M'()')} } {0}
+
+# 2.5: the boundary is matcher balance, not the next quote.  These are the
+# cases the whole design exists for: a quote inside the value does not end it.
+do_test 2.5.1 { execsql {SELECT M'(' OR '1'='1)'} } [list {' OR '1'='1}]
+do_test 2.5.2 { execsql {SELECT M'(it's)'} } {it's}
+do_test 2.5.3 { execsql {SELECT M'(--)'} } {--}
+do_test 2.5.4 { execsql {SELECT M'(;)'} } [list {;}]
+do_test 2.5.5 { execsql {SELECT M'(/* not a comment */)'} } {/* not a comment */}
+
+# 2.6: nesting, to a few levels and across pairs
+do_test 2.6.1 { execsql {SELECT M'((a))'} } {(a)}
+do_test 2.6.2 { execsql {SELECT M'(a(b(c)d)e)'} } {a(b(c)d)e}
+do_test 2.6.3 { execsql {SELECT M'([{}])'} } [list "\[{}\]"]
+
+# 2.7: an ill-formed literal is not a literal.  The tokenizer falls through
+# and lexes the M as the identifier it has always been, so these fail the way
+# an unknown column does rather than as a new class of error.
+foreach {tn sql} {
+  1  {SELECT M'(unbalanced'}
+  2  {SELECT M'(a]b)'}
+  3  {SELECT M'(a)b)'}
+  4  {SELECT M'abc'}
+} {
+  do_catchsql_test 2.7.$tn $sql {1 {no such column: M}}
+}
+
+# 2.8: the M must abut the quote.  With a space between them this is the
+# old reading, an identifier followed by a string, and not a literal.
+do_test 2.8.1 { execsql {SELECT M'(abc)'} } {abc}
+do_catchsql_test 2.8.2 {
+  SELECT M '(abc)'
+} {1 {no such column: M}}
+
+#-------------------------------------------------------------------------
+# 3.*: The parser.
+#
+# The terminal appears in one rule and produces a leaf.  No production reads
+# structure out of the value, and the literal is not admitted where a name is
+# expected.
+
+# 3.1: a literal is a term, so it composes like any other constant
+do_test 3.1.1 { execsql {SELECT M'(a)' || M'(b)'} } {ab}
+do_test 3.1.2 { execsql {SELECT upper(M'(abc)')} } {ABC}
+do_test 3.1.3 { execsql {SELECT CASE M'(a)' WHEN 'a' THEN 'yes' END} } {yes}
+do_test 3.1.4 { execsql {SELECT M'(a)' IN ('a','b')} } {1}
+do_test 3.1.5 { execsql {SELECT coalesce(NULL, M'(a)')} } {a}
+
+# 3.2: it is a string, not a number or a name
+do_test 3.2.1 { execsql {SELECT typeof(M'(123)')} } {text}
+do_test 3.2.2 { execsql {SELECT M'(123)' + 1} } {124}   ;# by affinity, as '123'+1
+
+# 3.3: the terminal is not admitted where an identifier is expected.  A string
+# may stand in for a name in SQLite, which is why the new terminal is kept out
+# of those rules deliberately rather than by accident.
+do_catchsql_test 3.3.1 {
+  CREATE TABLE M'(t1)'(x)
+} {1 {near "M'(t1)'": syntax error}}
+do_catchsql_test 3.3.2 {
+  SELECT 1 AS M'(alias)'
+} {1 {near "M'(alias)'": syntax error}}
+
+# 3.4: nor where a pragma or type name is expected
+do_catchsql_test 3.4.1 {
+  SELECT 1 FROM M'(nosuchtable)'
+} {1 {near "M'(nosuchtable)'": syntax error}}
+
+#-------------------------------------------------------------------------
+# 4.*: The value.
+#
+# What sits between the delimiters is delivered as data, byte for byte.  No
+# escape processing of any kind runs over it.
+
+do_execsql_test 4.0 {
+  CREATE TABLE t1(name TEXT);
+  INSERT INTO t1 VALUES('alice'), ('bob');
+}
+
+# 4.1: no dequoting.  An ordinary literal collapses a doubled quote; a
+# matchertext literal does not, because there is no escaping inside one.
+do_test 4.1.1 { execsql {SELECT M'(it''s)'} } {it''s}
+do_test 4.1.2 { execsql {SELECT length(M'(it''s)')} } {5}
+do_test 4.1.3 { execsql {SELECT 'it''s'} } {it's}
+do_test 4.1.4 { execsql {SELECT length('it''s')} } {4}
+
+# 4.2: backslashes are ordinary bytes, as they are everywhere in SQL
+do_test 4.2.1 { execsql {SELECT M'(a\nb)'} } [list {a\nb}]
+
+# 4.3: the value reaches the database and comes back unchanged
+do_test 4.3.1 {
+  execsql {
+    DELETE FROM t1;
+    INSERT INTO t1 VALUES(M'(' OR '1'='1)');
+    SELECT name FROM t1;
+  }
+} [list {' OR '1'='1}]
+
+# 4.4: and it is inert at the sink.  The canonical injection selects nothing,
+# because it is compared as data rather than read as syntax.
+do_execsql_test 4.4.0 {
+  DELETE FROM t1;
+  INSERT INTO t1 VALUES('alice'), ('bob');
+}
+do_test 4.4.1 {
+  execsql {SELECT count(*) FROM t1 WHERE name = M'(' OR '1'='1)'}
+} {0}
+do_test 4.4.2 {
+  execsql {SELECT count(*) FROM t1 WHERE name = M'(alice)'}
+} {1}
+
+# 4.5: the parse does not depend on what the value contains.  This is the
+# property the whole design is for: the bytecode of the same statement is
+# identical for every payload, apart from the string operand itself.
+proc mt_skeleton {payload} {
+  set res [list]
+  foreach row [execsql "EXPLAIN SELECT * FROM t1 WHERE name = M'($payload)'"] {
+    lappend res $row
+  }
+  # Drop the P4 operand, which is the only place the value may appear.
+  set out [list]
+  foreach {addr opcode p1 p2 p3 p4 p5 comment} $res {
+    lappend out $addr $opcode $p1 $p2 $p3 $p5
+  }
+  return $out
+}
+set mt_base [mt_skeleton {alice}]
+foreach {tn payload} {
+  1  {' OR '1'='1}
+  2  {x'; DROP TABLE t1; --}
+  3  {%_ [] {} ()}
+  4  {UNION ALL SELECT * FROM sqlite_schema}
+} {
+  do_test 4.5.$tn { mt_skeleton $payload } $mt_base
+}
+
+#-------------------------------------------------------------------------
+# 6.*: The rewriting paths.
+#
+# Several places in SQLite take a token out of the SQL text and dequote it,
+# collapsing doubled quotes. None may reach a matchertext value, because a
+# value legitimately begins with a quote and would be silently rewritten.
+#
+# The separation is structural rather than lucky. Seven of the eight callers
+# of sqlite3Dequote() take their token from a rule in an identifier position,
+# nm, ids or typetoken, and MTSTRING appears only in term. The eighth switches
+# on TK_ID. The tests below pin that: each drives a value beginning with a
+# quote through a path that dequotes an ordinary token, and checks the bytes
+# come back whole.
+
+do_execsql_test 6.0 {
+  CREATE TABLE t6(a TEXT, b TEXT);
+}
+
+# 6.1: a value that begins and ends with a quote survives insertion and
+# retrieval untouched.  Under sqlite3Dequote() the leading quote would be read
+# as a delimiter and the value would lose characters.
+do_test 6.1.1 {
+  execsql {
+    DELETE FROM t6;
+    INSERT INTO t6(a) VALUES(M'('quoted')');
+    SELECT a, length(a) FROM t6;
+  }
+} [list {'quoted'} 8]
+
+# 6.2: doubled quotes stay doubled.  This is the case that separates a
+# matchertext value from an ordinary literal, where '' means one quote.
+do_test 6.2.1 {
+  execsql {SELECT M'(a''b)', length(M'(a''b)')}
+} [list {a''b} 4]
+
+# 6.3: through a column alias, which is where sqlite3ExprListSetName() would
+# dequote an ordinary token
+do_test 6.3.1 {
+  execsql {SELECT M'('x')' AS c}
+} [list {'x'}]
+
+# 6.4: through a DEFAULT clause, stored in the schema and re-parsed on the
+# next open.  This exercises the round trip the L3 claim depends on.
+do_test 6.4.1 {
+  execsql {
+    CREATE TABLE t6b(x TEXT DEFAULT (M'('d')'));
+    INSERT INTO t6b DEFAULT VALUES;
+    SELECT x FROM t6b;
+  }
+} [list {'d'}]
+do_test 6.4.2 {
+  db close
+  sqlite3 db test.db
+  execsql {
+    INSERT INTO t6b DEFAULT VALUES;
+    SELECT DISTINCT x FROM t6b;
+  }
+} [list {'d'}]
+
+# 6.5: through a view, whose text is stored and re-parsed
+do_test 6.5.1 {
+  execsql {
+    CREATE VIEW v6 AS SELECT M'(' OR '1'='1)' AS payload;
+    SELECT payload FROM v6;
+  }
+} [list {' OR '1'='1}]
+do_test 6.5.2 {
+  db close
+  sqlite3 db test.db
+  execsql {SELECT payload FROM v6}
+} [list {' OR '1'='1}]
+
+# 6.6: normalization.  sqlite3_normalized_sql() exists to be safe to log, so
+# every literal must reduce to a question mark.  A matchertext literal that
+# fell through to the default branch would be copied out verbatim, and folded
+# to upper case on the way, putting an attacker-controlled value into the log.
+ifcapable normalize {
+  do_test 6.6.1 {
+    set stmt [sqlite3_prepare_v2 db {SELECT * FROM t6 WHERE a = M'(secret)'} -1 tail]
+    set res [sqlite3_normalized_sql $stmt]
+    sqlite3_finalize $stmt
+    set res
+  } {SELECT*FROM t6 WHERE a=?;}
+
+  # The same statement with an ordinary literal normalizes identically, which
+  # is the property worth having: the two literal forms are indistinguishable
+  # once the value is gone.
+  do_test 6.6.2 {
+    set stmt [sqlite3_prepare_v2 db {SELECT * FROM t6 WHERE a = 'secret'} -1 tail]
+    set res [sqlite3_normalized_sql $stmt]
+    sqlite3_finalize $stmt
+    set res
+  } {SELECT*FROM t6 WHERE a=?;}
+}
+
+#-------------------------------------------------------------------------
+# 5.*: Backward compatibility.
+#
+# The extension is meant to be conservative: text that parses today must
+# still parse, and only a balanced M'(...)' may acquire a new meaning.
+
+do_execsql_test 5.0 {
+  CREATE TABLE M(x);
+  INSERT INTO M VALUES(42);
+}
+
+# 5.1: M is still an ordinary identifier, including as a table name followed
+# with no space by a quoted alias
+do_test 5.1.1 { execsql {SELECT x FROM M} } {42}
+do_test 5.1.2 { execsql {SELECT x FROM M'abc'} } {42}
+do_test 5.1.3 { execsql {SELECT x FROM M 'abc'} } {42}
+
+# 5.2: and as a column name, a function argument, and a keyword prefix
+do_test 5.2.1 { execsql {SELECT M.x FROM M} } {42}
+do_test 5.2.2 { execsql {SELECT count(M.x) FROM M} } {1}
+do_test 5.2.3 {
+  execsql {WITH c AS MATERIALIZED (SELECT 7 AS v) SELECT v FROM c}
+} {7}
+
+# 5.3: ordinary string literals are untouched
+do_test 5.3.1 { execsql {SELECT '(abc)'} } {(abc)}
+do_test 5.3.2 { execsql {SELECT 'M'} } {M}
+
+# 5.4: the one case that does change meaning, recorded so the cost is
+# explicit rather than discovered.  Before the extension this named table M
+# with the alias (x); now it is a literal, which is not valid in that
+# position.  It needs a table or column named M followed with no space by a
+# quoted alias whose first character opens a matcher.
+do_catchsql_test 5.4.1 {
+  SELECT x FROM M'(x)'
+} {1 {near "M'(x)'": syntax error}}
+
+finish_test

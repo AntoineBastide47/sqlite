@@ -831,6 +831,9 @@ char *sqlite3Normalize(
       case TK_INTEGER:
       case TK_FLOAT:
       case TK_VARIABLE:
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+      case TK_MTSTRING:
+#endif
       case TK_BLOB: {
         sqlite3_str_append(pStr, "?", 1);
         break;

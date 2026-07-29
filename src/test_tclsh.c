@@ -51,6 +51,9 @@ static int SQLITE_TCLAPI load_testfixture_extensions(
 const char *sqlite3TestInit(Tcl_Interp *interp){
   extern int Sqlite3_Init(Tcl_Interp*);
   extern int Sqliteconfig_Init(Tcl_Interp*);
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  extern int Sqlitetest_matchertext_Init(Tcl_Interp*);
+#endif
   extern int Sqlitetest1_Init(Tcl_Interp*);
   extern int Sqlitetest2_Init(Tcl_Interp*);
   extern int Sqlitetest3_Init(Tcl_Interp*);
@@ -119,6 +122,9 @@ const char *sqlite3TestInit(Tcl_Interp *interp){
   }
 #ifdef SQLITE_ENABLE_ZIPVFS
   Zipvfs_Init(interp);
+#endif
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  Sqlitetest_matchertext_Init(interp);
 #endif
   Md5_Init(interp);
   Sqliteconfig_Init(interp);
