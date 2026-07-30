@@ -110,9 +110,17 @@ do_catchsql_test 5.1 {
   CREATE VIRTUAL TABLE xx USING fts5(x, tokenize="porter 'ascii");
 } {1 {parse error in tokenize directive}} 
 
-do_catchsql_test 5.2 {
-  CREATE VIRTUAL TABLE xx USING fts5(x, [y[]);
-} {0 {}}
+# [y[] names the column "y[".  With SQLITE_ENABLE_MATCHERTEXT a bracketed
+# identifier ends by matcher balance, so an unmatched '[' does not parse.
+ifcapable !matchertext {
+  do_catchsql_test 5.2 {
+    CREATE VIRTUAL TABLE xx USING fts5(x, [y[]);
+  } {0 {}}
+} else {
+  do_catchsql_test 5.2 {
+    CREATE VIRTUAL TABLE xx USING fts5(x, [y[]);
+  } {1 {unrecognized token: "[y["}}
+}
 
 do_catchsql_test 5.3 {
   CREATE VIRTUAL TABLE yy USING fts5(x, [y]]);

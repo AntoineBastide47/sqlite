@@ -427,6 +427,88 @@ ifcapable normalize {
 }
 
 #-------------------------------------------------------------------------
+# 7.*: The name hole, [...].
+#
+# SQLite already delimits identifiers with a matcher pair. The only change is
+# that the reader ends the name by balance instead of at the first ']', which
+# is premise A1 for this position with no new syntax at all.
+#
+# Strict: an unbalanced interior is an error, not a fall back to the old scan.
+
+# 7.1: ordinary bracketed identifiers are unaffected
+do_execsql_test 7.1.1 {
+  CREATE TABLE [t7](x);
+  INSERT INTO [t7] VALUES(1);
+  SELECT x FROM [t7];
+} {1}
+do_execsql_test 7.1.2 {
+  CREATE TABLE [two words](y);
+  SELECT count(*) FROM [two words];
+} {0}
+
+# 7.2: nesting now works, and the name is exactly the interior
+do_execsql_test 7.2.1 {
+  CREATE TABLE [a[b]c](z);
+  INSERT INTO [a[b]c] VALUES(2);
+  SELECT z FROM [a[b]c];
+} {2}
+do_test 7.2.2 {
+  execsql {SELECT name FROM sqlite_schema WHERE name LIKE 'a%c'}
+} [list {a[b]c}]
+do_execsql_test 7.2.3 {
+  CREATE TABLE [x([{}])y](w);
+  SELECT count(*) FROM [x([{}])y];
+} {0}
+
+# 7.3: the name may hold what a name never could, taken verbatim
+do_test 7.3.1 {
+  execsql {CREATE TABLE [it's ; -- ok](v)}
+  execsql {SELECT name FROM sqlite_schema WHERE name LIKE 'it%'}
+} [list {it's ; -- ok}]
+
+# 7.4: strict.  An unmatched bracket is an error.
+#
+# 7.4.1 is the compatibility cost: [a[b] names the column a[b] today and does
+# not parse here. 7.4.2 was already an error before the change.
+do_catchsql_test 7.4.1 {
+  SELECT 1 FROM [a[b]
+} {1 {unrecognized token: "[a[b"}}
+do_catchsql_test 7.4.2 {
+  SELECT 1 FROM [a]b]
+} {1 {unrecognized token: "]"}}
+do_catchsql_test 7.4.3 {
+  SELECT 1 FROM [a)b]
+} {1 {unrecognized token: "[a)b"}}
+
+# 7.5: it is a name, not a value.  The two holes stay disjoint: a bracketed
+# form resolves as a column reference, never as a string constant.
+do_catchsql_test 7.5.1 {
+  SELECT [nosuchcolumn]
+} {1 {no such column: nosuchcolumn}}
+
+# 7.6: usable wherever a name goes, including an alias and a column reference
+do_execsql_test 7.6.1 {
+  SELECT z AS [al[ia]s] FROM [a[b]c];
+} {2}
+do_execsql_test 7.6.2 {
+  CREATE TABLE [t7b]([c[0]], [c[1]]);
+  INSERT INTO [t7b] VALUES(10, 20);
+  SELECT [c[0]] + [c[1]] FROM [t7b];
+} {30}
+
+# 7.7: the name survives the schema round trip, which is where a rewriting
+# path would show up
+do_execsql_test 7.7.1 {
+  CREATE VIEW [v[7]] AS SELECT z FROM [a[b]c];
+  SELECT z FROM [v[7]];
+} {2}
+do_test 7.7.2 {
+  db close
+  sqlite3 db test.db
+  execsql {SELECT z FROM [v[7]]}
+} {2}
+
+#-------------------------------------------------------------------------
 # 5.*: Backward compatibility.
 #
 # The extension is meant to be conservative: text that parses today must

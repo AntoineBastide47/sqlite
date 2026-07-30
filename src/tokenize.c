@@ -497,9 +497,22 @@ i64 sqlite3GetToken(const unsigned char *z, int *tokenType){
       return i;
     }
     case CC_QUOTE2: {
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+      i = sqlite3MatchertextEnd(z);
+      if( i>0 ){
+        *tokenType = TK_ID;
+        return i;
+      }
+
+      /* Consume everything for error parity */
+      for(i=1; z[i] && z[i]!=']'; i++){}
+      *tokenType = TK_ILLEGAL;
+      return i;
+#else
       for(i=1, c=z[0]; c!=']' && (c=z[i])!=0; i++){}
       *tokenType = c==']' ? TK_ID : TK_ILLEGAL;
       return i;
+#endif
     }
     case CC_VARNUM: {
       *tokenType = TK_VARIABLE;
