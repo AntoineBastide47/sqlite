@@ -1198,6 +1198,8 @@ term(A) ::= MTSTRING(X). {
   X.z += 3;
   X.n -= 5;
   A = sqlite3ExprAlloc(pParse->db, TK_STRING, &X, 0);
+  assert( A==0 || (A->pLeft==0 && A->pRight==0) );
+  assert( A==0 || (A->flags & (EP_Quoted|EP_DblQuoted))==0 );
 }
 %endif SQLITE_ENABLE_MATCHERTEXT
 term(A) ::= INTEGER(X). {

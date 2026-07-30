@@ -509,6 +509,66 @@ do_test 7.7.2 {
 } {2}
 
 #-------------------------------------------------------------------------
+# 8.*: L2 against the double-quoted string misfeature.
+#
+# DQS reinterprets a double-quoted token as a string literal when it fails to
+# resolve as an identifier, so one token means a name or a value depending on
+# the schema. It stays enabled here, at SQLite's default, because neither hole
+# can reach it: resolve.c gates the fallback on EP_DblQuoted, and util.c sets
+# that flag only when the token begins with '"'.
+
+do_execsql_test 8.0 {
+  CREATE TABLE t8(a);
+  INSERT INTO t8 VALUES('zzz');
+}
+
+# 8.1: the misfeature is present and on, so what follows is measured against
+# the real thing rather than a build with it disabled
+do_execsql_test 8.1.1 {
+  SELECT "nosuchcolumn"
+} {nosuchcolumn}
+do_execsql_test 8.1.2 {
+  SELECT count(*) FROM t8 WHERE a = "zzz"
+} {1}
+
+# 8.2: the value hole is never resolved as a name.  "a" is a real column, so
+# DQS is not even needed to make it one; the matchertext form is still a
+# string, which is what makes the reading of the hole unconditional.
+do_execsql_test 8.2.1 {
+  SELECT M'(a)'
+} {a}
+do_execsql_test 8.2.2 {
+  SELECT count(*) FROM t8 WHERE a = M'(zzz)'
+} {1}
+do_execsql_test 8.2.3 {
+  SELECT count(*) FROM t8 WHERE a = M'(a)'
+} {0}
+
+# 8.3: the name hole is never reinterpreted as a value.  [...] does not set
+# EP_DblQuoted, so an unresolvable bracketed identifier is an error even with
+# DQS on, where the double-quoted spelling would have become a string.
+do_catchsql_test 8.3.1 {
+  SELECT [nosuchcolumn]
+} {1 {no such column: nosuchcolumn}}
+do_execsql_test 8.3.2 {
+  SELECT [a] FROM t8
+} {zzz}
+
+# 8.4: the same holds with DQS turned on explicitly at run time, which is the
+# setting the compile-time default cannot control
+do_test 8.4.1 {
+  sqlite3_db_config db DQS_DML 1
+  sqlite3_db_config db DQS_DDL 1
+  execsql {SELECT "nosuchcolumn"}
+} {nosuchcolumn}
+do_catchsql_test 8.4.2 {
+  SELECT [nosuchcolumn]
+} {1 {no such column: nosuchcolumn}}
+do_execsql_test 8.4.3 {
+  SELECT M'(nosuchcolumn)'
+} {nosuchcolumn}
+
+#-------------------------------------------------------------------------
 # 5.*: Backward compatibility.
 #
 # The extension is meant to be conservative: text that parses today must
