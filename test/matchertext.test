@@ -33,7 +33,7 @@ source $testdir/tester.tcl
 set testprefix matchertext
 
 ifcapable !matchertext {
-  finish_test
+finish_test
   return
 }
 
@@ -306,29 +306,45 @@ do_test 4.4.2 {
   execsql {SELECT count(*) FROM t1 WHERE name = M'(alice)'}
 } {1}
 
-# 4.5: the parse does not depend on what the value contains.  This is the
-# property the whole design is for: the bytecode of the same statement is
-# identical for every payload, apart from the string operand itself.
-proc mt_skeleton {payload} {
-  set res [list]
-  foreach row [execsql "EXPLAIN SELECT * FROM t1 WHERE name = M'($payload)'"] {
-    lappend res $row
-  }
-  # Drop the P4 operand, which is the only place the value may appear.
+# 4.5: the parse does not depend on what the value contains.  The bytecode of
+# the same statement is identical for every payload, apart from the slot that
+# holds the string.
+#
+# mt_skeleton drops the P4 operand, which is the only place the value may
+# appear, and compares everything else.
+proc mt_skeleton {sql payload} {
   set out [list]
-  foreach {addr opcode p1 p2 p3 p4 p5 comment} $res {
+  foreach {addr opcode p1 p2 p3 p4 p5 comment} \
+      [execsql [string map [list %V% "M'($payload)'"] $sql]] {
     lappend out $addr $opcode $p1 $p2 $p3 $p5
   }
   return $out
 }
-set mt_base [mt_skeleton {alice}]
-foreach {tn payload} {
+
+set mt_payloads {
   1  {' OR '1'='1}
   2  {x'; DROP TABLE t1; --}
   3  {%_ [] {} ()}
   4  {UNION ALL SELECT * FROM sqlite_schema}
-} {
-  do_test 4.5.$tn { mt_skeleton $payload } $mt_base
+  5  {a'||(SELECT group_concat(name) FROM sqlite_schema)||'b}
+  6  {"dq" `bt` [br] {br}}
+  7  {}
+  8  {/* comment */ -- line}
+}
+
+# Four query shapes, so the result does not rest on one statement kind.
+set mt_hosts {
+  select   {EXPLAIN SELECT * FROM t1 WHERE name = %V%}
+  insert   {EXPLAIN INSERT INTO t1(name) VALUES(%V%)}
+  like     {EXPLAIN SELECT * FROM t1 WHERE name LIKE %V%}
+  ordering {EXPLAIN SELECT %V% AS c FROM t1 ORDER BY 1}
+}
+
+foreach {host sql} $mt_hosts {
+  set mt_base [mt_skeleton $sql {alice}]
+  foreach {tn payload} $mt_payloads {
+    do_test 4.5.$host.$tn { mt_skeleton $sql $payload } $mt_base
+  }
 }
 
 #-------------------------------------------------------------------------
@@ -604,5 +620,88 @@ do_test 5.3.2 { execsql {SELECT 'M'} } {M}
 do_catchsql_test 5.4.1 {
   SELECT x FROM M'(x)'
 } {1 {near "M'(x)'": syntax error}}
+
+#-------------------------------------------------------------------------
+# 9.*: Re-parsing.
+#
+# SQLite stores the text of views and triggers in the schema and parses it
+# again on the next open, and ALTER TABLE rewrites that text in place. So the
+# question is not whether a value is ever re-parsed, it is whether it comes
+# back byte for byte when it is.
+
+do_execsql_test 9.0 {
+  CREATE TABLE t9(name);
+  CREATE TABLE log9(v);
+  INSERT INTO t9 VALUES('alice');
+}
+
+# 9.1: inside a trigger body, which is stored as text and re-parsed
+do_test 9.1.1 {
+  execsql {
+    CREATE TRIGGER tr9 AFTER INSERT ON t9 BEGIN
+      INSERT INTO log9 VALUES(M'(' OR '1'='1)');
+    END;
+    INSERT INTO t9 VALUES('bob');
+    SELECT v FROM log9;
+  }
+} [list {' OR '1'='1}]
+do_test 9.1.2 {
+  db close
+  sqlite3 db test.db
+  execsql {
+    DELETE FROM log9;
+    INSERT INTO t9 VALUES('carol');
+    SELECT v FROM log9;
+  }
+} [list {' OR '1'='1}]
+
+# 9.2: ALTER TABLE RENAME rewrites the stored text of a view.  The table name
+# must change and the value must not.
+#
+# The value holds double quotes on purpose. renameQuotefixExprCb() in alter.c
+# rewrites double-quoted string literals to single-quoted ones, and it fires on
+# TK_STRING carrying EP_DblQuoted. A matchertext literal never carries that
+# flag, so the value is left alone.
+do_execsql_test 9.2.1 {
+  CREATE VIEW v9 AS SELECT name, M'("q" ; --)' AS tag FROM t9;
+  SELECT DISTINCT tag FROM v9;
+} {{"q" ; --}}
+do_test 9.2.2 {
+  execsql {ALTER TABLE t9 RENAME TO t9b}
+  execsql {SELECT sql FROM sqlite_schema WHERE name='v9'}
+} [list {CREATE VIEW v9 AS SELECT name, M'("q" ; --)' AS tag FROM "t9b"}]
+do_execsql_test 9.2.3 {
+  SELECT DISTINCT tag FROM v9;
+} {{"q" ; --}}
+do_test 9.2.4 {
+  db close
+  sqlite3 db test.db
+  execsql {SELECT DISTINCT tag FROM v9}
+} [list {"q" ; --}]
+
+# 9.3: sqlite3_expanded_sql() re-serializes a statement.  A bound parameter is
+# substituted; a matchertext literal is passed through unchanged, because it is
+# not a parameter.
+#
+# The output is therefore only valid input to a parser that knows the literal.
+# Given to a build without SQLITE_ENABLE_MATCHERTEXT it would re-lex as an
+# identifier followed by a different string. That is a scope limit on any tool
+# which captures expanded SQL and replays it, not a defect here.
+do_test 9.3.1 {
+  set stmt [sqlite3_prepare_v2 db {
+    SELECT * FROM t9b WHERE name = M'(' OR '1'='1)' AND name = ?
+  } -1 tail]
+  sqlite3_bind_text $stmt 1 {b'c} 3
+  set res [sqlite3_expanded_sql $stmt]
+  sqlite3_finalize $stmt
+  string match {*M'(' OR '1'='1)'*} $res
+} 1
+do_test 9.3.2 {
+  set stmt [sqlite3_prepare_v2 db {SELECT ?, M'(x)'} -1 tail]
+  sqlite3_bind_text $stmt 1 {y} 1
+  set res [sqlite3_expanded_sql $stmt]
+  sqlite3_finalize $stmt
+  set res
+} {SELECT 'y', M'(x)'}
 
 finish_test
