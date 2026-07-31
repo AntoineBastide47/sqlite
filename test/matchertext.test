@@ -248,20 +248,22 @@ do_test 3.1.5 { execsql {SELECT coalesce(NULL, M'(a)')} } {a}
 do_test 3.2.1 { execsql {SELECT typeof(M'(123)')} } {text}
 do_test 3.2.2 { execsql {SELECT M'(123)' + 1} } {124}   ;# by affinity, as '123'+1
 
-# 3.3: the terminal is not admitted where an identifier is expected.  A string
-# may stand in for a name in SQLite, which is why the new terminal is kept out
-# of those rules deliberately rather than by accident.
-do_catchsql_test 3.3.1 {
-  CREATE TABLE M'(t1)'(x)
-} {1 {near "M'(t1)'": syntax error}}
-do_catchsql_test 3.3.2 {
+# 3.3: the terminal is admitted where an identifier is expected, beside the
+# STRING that may already stand in for a name.  Which of a name or a value it
+# becomes is fixed by grammar position, not by resolution at run time, so the
+# value still never contributes syntax.
+do_execsql_test 3.3.1 {
+  CREATE TABLE M'(t1x)'(x);
+  SELECT count(*) FROM M'(t1x)';
+} {0}
+do_execsql_test 3.3.2 {
   SELECT 1 AS M'(alias)'
-} {1 {near "M'(alias)'": syntax error}}
+} {1}
 
-# 3.4: nor where a pragma or type name is expected
+# 3.4: and it names the table it spells, so an absent one is reported by name
 do_catchsql_test 3.4.1 {
   SELECT 1 FROM M'(nosuchtable)'
-} {1 {near "M'(nosuchtable)'": syntax error}}
+} {1 {no such table: nosuchtable}}
 
 #-------------------------------------------------------------------------
 # 4.*: The value.
@@ -618,8 +620,8 @@ do_test 5.3.2 { execsql {SELECT 'M'} } {M}
 # position.  It needs a table or column named M followed with no space by a
 # quoted alias whose first character opens a matcher.
 do_catchsql_test 5.4.1 {
-  SELECT x FROM M'(x)'
-} {1 {near "M'(x)'": syntax error}}
+  SELECT x FROM M'(nosuchtable2)'
+} {1 {no such table: nosuchtable2}}
 
 #-------------------------------------------------------------------------
 # 9.*: Re-parsing.
@@ -703,5 +705,199 @@ do_test 9.3.2 {
   sqlite3_finalize $stmt
   set res
 } {SELECT 'y', M'(x)'}
+
+#-------------------------------------------------------------------------
+# 10.*: The write path, %m and %M.
+#
+# Both checks concern the content of one literal and nothing outside it.
+#
+#   %M  one untrusted piece of that content, checked on its own.  This is what
+#       stops a piece pairing with a matcher the caller wrote.
+#   %m  the assembled content, checked as a whole and wrapped as M'(...)'.
+#       This is what catches a caller who left its own matcher unbalanced.
+#
+# Neither looks at the surrounding statement.  There is no escaping to fall
+# back on: what cannot embed verbatim is refused, and mprintf returns NULL,
+# which the test command reports as "rejected".
+
+# 10.1: %m wraps content that is already matchertext, quotes and all
+foreach {tn val out} {
+  1  {alice}                 {WHERE n = M'(alice)'}
+  2  {' OR '1'='1}           {WHERE n = M'(' OR '1'='1)'}
+  3  {x'; DROP TABLE t; --}  {WHERE n = M'(x'; DROP TABLE t; --)'}
+  4  {f(x) [y] {z}}          {WHERE n = M'(f(x) [y] {z})'}
+  5  {}                      {WHERE n = M'()'}
+} {
+  do_test 10.1.$tn { sqlite3_matchertext_printf {WHERE n = %m} $val } $out
+}
+
+# 10.2: content that is not matchertext is refused, never escaped
+foreach {tn val} {
+  1  {x) OR 1=1 --}
+  2  {f(x}
+  3  {(a]}
+  4  {smile :]}
+  5  {)(}
+} {
+  do_test 10.2.$tn { sqlite3_matchertext_printf {WHERE n = %m} $val } {rejected}
+}
+
+# 10.3: check 2 is about the caller's own text inside the literal.  Here the
+# caller left a '[' unbalanced in its message, so the content cannot embed.
+do_test 10.3.1 {
+  sqlite3_matchertext_printf {VALUES(%m)} {Hi user, x welcome !}
+} {VALUES(M'(Hi user, x welcome !)')}
+do_test 10.3.2 {
+  sqlite3_matchertext_printf {VALUES(%m)} {Hi user, x welcome ![}
+} {rejected}
+
+# 10.4: nothing outside the literal is inspected.  An unbalanced matcher
+# elsewhere in the statement is the caller's business, not this check's: it
+# cannot let a value escape its own hole.
+do_test 10.4.1 {
+  sqlite3_matchertext_printf {SELECT ')' FROM t WHERE n=%m} v
+} {SELECT ')' FROM t WHERE n=M'(v)'}
+do_test 10.4.2 {
+  sqlite3_matchertext_printf {SELECT ( FROM t WHERE n=%m} v
+} {SELECT ( FROM t WHERE n=M'(v)'}
+
+# 10.5: check 1, %M.  The caller wrote "Hi [" and "] bye" around the piece.
+# A piece carrying ']' would close the caller's '[' and so escape its slot,
+# even though the assembled content balances and check 2 alone would pass it.
+do_test 10.5.1 { sqlite3_matchertext_printf {Hi [%M] bye} {x}   } {Hi [x] bye}
+do_test 10.5.2 { sqlite3_matchertext_printf {Hi [%M] bye} {[a]} } {Hi [[a]] bye}
+do_test 10.5.3 { sqlite3_matchertext_printf {Hi [%M] bye} {x]y} } {rejected}
+do_test 10.5.4 {
+  sqlite3_matchertext_printf {Hi %M bye} {' OR '1'='1}
+} {Hi ' OR '1'='1 bye}
+
+# 10.6: the two levels together.  A piece passes check 1, and the content it
+# lands in still has to pass check 2.
+do_test 10.6.1 {
+  sqlite3_matchertext_printf {VALUES(%m)} \
+      [sqlite3_matchertext_printf {Hi user, %M welcome !} bob]
+} {VALUES(M'(Hi user, bob welcome !)')}
+do_test 10.6.2 {
+  set content [sqlite3_matchertext_printf {Hi user, %M welcome ![} bob]
+  list $content [sqlite3_matchertext_printf {VALUES(%m)} $content]
+} {{Hi user, bob welcome ![} rejected}
+
+# 10.7: several holes, and one bad piece refuses the whole statement
+do_test 10.7.1 {
+  sqlite3_matchertext_printf {WHERE a=%m AND b=%m} {p'q} {r(s)}
+} {WHERE a=M'(p'q)' AND b=M'(r(s))'}
+do_test 10.7.2 {
+  sqlite3_matchertext_printf {WHERE a=%m AND b=%m} {p'q} {r)s}
+} {rejected}
+
+# 10.8: a NULL value is SQL NULL, as %Q does
+do_test 10.8.1 { sqlite3_matchertext_printf {WHERE n = %m} } {WHERE n = NULL}
+
+# 10.9: the other conversions are untouched
+do_test 10.9.1 {
+  sqlite3_matchertext_printf {%q | %Q | %w} {a'b} {c'd} {e"f}
+} {a''b | 'c''d' | e""f}
+
+# 10.10: what %m produces parses, and the value stays data
+do_execsql_test 10.10.0 {
+  CREATE TABLE t10(n);
+  INSERT INTO t10 VALUES('alice'), ('bob');
+}
+foreach {tn val cnt} {
+  1  {alice}                  1
+  2  {' OR '1'='1}            0
+  3  {x'; DROP TABLE t10; --} 0
+  4  {p'q}                    0
+} {
+  do_test 10.10.$tn {
+    execsql [sqlite3_matchertext_printf \
+        {SELECT count(*) FROM t10 WHERE n = %m} $val]
+  } $cnt
+}
+do_execsql_test 10.10.9 { SELECT count(*) FROM t10; } {2}
+
+#-------------------------------------------------------------------------
+# 11.*: SQLITE_DBCONFIG_MATCHERTEXT.
+#
+# The quote-delimited value hole is what string concatenation fills, so the
+# setting refuses it in SQL arriving from outside.  SQL that SQLite generates
+# for itself is exempt: it is written in the C source, and it is what the
+# schema writer emits through %Q.
+#
+# Off by default, so a connection behaves as SQLite always has until it asks
+# for the tighter rule.
+
+do_execsql_test 11.0 {
+  CREATE TABLE t11(n);
+  INSERT INTO t11 VALUES(M'(a)'), (M'(b)'), (M'(c)');
+  -- Written while the setting is off, so its body holds an ordinary literal.
+  -- Everything that re-parses this later has to keep accepting it.
+  CREATE VIEW v11 AS SELECT 'lit' AS x;
+}
+
+# 11.1: off by default, a literal works as always
+do_execsql_test 11.1.1 { SELECT count(*) FROM t11 WHERE n = 'a' } {1}
+
+# 11.2: with the setting on, a quoted literal from outside is refused, so a
+# statement built by concatenation cannot be written at all
+do_test 11.2.1 {
+  sqlite3_db_config db MATCHERTEXT 1
+  catchsql {SELECT count(*) FROM t11 WHERE n = 'a'}
+} {1 {quoted string literal 'a': use a matchertext literal M'(...)'}}
+do_test 11.2.2 {
+  catchsql {SELECT count(*) FROM t11 WHERE n = 'x' OR '1'='1'}
+} {1 {quoted string literal 'x': use a matchertext literal M'(...)'}}
+
+# 11.3: the matchertext form is how a value is written instead
+do_execsql_test 11.3.1 { SELECT count(*) FROM t11 WHERE n = M'(a)' } {1}
+do_execsql_test 11.3.2 { SELECT count(*) FROM t11 WHERE n = M'(x' OR '1'='1)' } {0}
+
+# 11.4: names too, since nm accepts the literal beside STRING
+do_execsql_test 11.4.1 { SELECT count(*) FROM M'(t11)' } {3}
+
+# 11.5: SQLite's own SQL still runs, which is what the exemption is for
+do_execsql_test 11.5.1 {
+  CREATE TABLE t11b(x);
+  CREATE INDEX i11 ON t11b(x);
+  DROP INDEX i11;
+  DROP TABLE t11b;
+  SELECT count(*) FROM t11;
+} {3}
+do_execsql_test 11.5.2 {
+  ALTER TABLE t11 RENAME TO t11c;
+  SELECT count(*) FROM M'(t11c)';
+} {3}
+
+# A view body written before the setting was turned on holds an ordinary
+# literal, and every path that re-parses that stored text must still accept
+# it.  Schema text was already accepted when it was written; re-reading it is
+# not input arriving from outside.  ALTER TABLE RENAME re-parses it through
+# PARSE_MODE_RENAME, which is why the exemption tests the parse mode and not
+# just the database flags.
+do_execsql_test 11.5.3 {
+  SELECT x FROM v11;
+} {lit}
+do_execsql_test 11.5.4 {
+  ALTER TABLE t11c RENAME TO t11d;
+  ALTER TABLE t11d RENAME TO t11c;
+  SELECT x FROM v11;
+} {lit}
+
+# VACUUM runs a script of its own full of ordinary literals
+do_execsql_test 11.5.5 { VACUUM } {}
+
+# and the schema re-parse at open, with the setting still on
+do_test 11.5.6 {
+  db close
+  sqlite3 db test.db
+  sqlite3_db_config db MATCHERTEXT 1
+  execsql {SELECT x FROM v11}
+} {lit}
+
+# 11.6: and back off again
+do_test 11.6.1 {
+  sqlite3_db_config db MATCHERTEXT 0
+  execsql {SELECT count(*) FROM t11c WHERE n = 'a'}
+} {1}
 
 finish_test

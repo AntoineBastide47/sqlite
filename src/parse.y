@@ -338,6 +338,9 @@ columnname(A) ::= nm(A) typetoken(Y). {sqlite3AddColumn(pParse,A,Y);}
 %type nm {Token}
 nm(A) ::= idj(A).
 nm(A) ::= STRING(A).
+%ifdef SQLITE_ENABLE_MATCHERTEXT
+nm(A) ::= MTSTRING(A).
+%endif SQLITE_ENABLE_MATCHERTEXT
 
 // A typetoken is really zero or more tokens that form a type name such
 // as can be found after the column name in a CREATE TABLE statement.

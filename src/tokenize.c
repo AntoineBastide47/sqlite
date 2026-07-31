@@ -731,6 +731,21 @@ int sqlite3RunParser(Parse *pParse, const char *zSql){
         break;
       }
     }
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+    if( tokenType==TK_STRING
+     && (db->flags & SQLITE_MatchertextOnly)!=0
+     && db->init.busy==0
+     && (db->mDbFlags & DBFLAG_PreferBuiltin)==0
+     && !IN_SPECIAL_PARSE
+    ){
+      Token x;
+      x.z = zSql;
+      x.n = (u32)n;
+      sqlite3ErrorMsg(pParse,
+          "quoted string literal %T: use a matchertext literal M'(...)'", &x);
+      break;
+    }
+#endif
     pParse->sLastToken.z = zSql;
     pParse->sLastToken.n = (u32)n;
     sqlite3Parser(pEngine, tokenType, pParse->sLastToken);

@@ -37,7 +37,9 @@
 #define etESCAPE_j    17 /* %j -> JSON string literal w/o "..." */
 #define etESCAPE_J    18 /* %J -> JSON string literal with "..." */
 
-#define etINVALID     19 /* Any unrecognized conversion type */
+#define etESCAPE_m    19 /* %m -> matchertext literal M'(...)' */
+#define etESCAPE_M    20 /* %M -> one untrusted piece of a literal */
+#define etINVALID     21 /* Any unrecognized conversion type */
 
 
 /*
@@ -94,6 +96,10 @@ for {set r 0} {$r<$mx} {incr r} {
 static const char aDigits[] = "0123456789ABCDEF0123456789abcdef";
 static const char aHex[]    = "0123456789abcdef";
 static const char aPrefix[] = "-x0\000X0";
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+static const et_info mtFmtInfo = {  'm',  0, 4, etESCAPE_m,   0,  0,  0 };
+static const et_info mtFmtPiece= {  'M',  0, 4, etESCAPE_M,   0,  0,  0 };
+#endif
 static const et_info fmtinfo[25] = {
   /*  0 */  {  'd', 10, 1, etDECIMAL,    0,  0,  0 },
   /*  1 */  {  'e',  0, 1, etEXP,        30, 0,  0 },
@@ -132,7 +138,8 @@ static const et_info fmtinfo[25] = {
 ** Set the StrAccum object to an error mode.
 */
 void sqlite3StrAccumSetError(StrAccum *p, u8 eError){
-  assert( eError==SQLITE_NOMEM || eError==SQLITE_TOOBIG );
+  assert( eError==SQLITE_NOMEM || eError==SQLITE_TOOBIG
+       || eError==SQLITE_MISUSE );
   p->accError = eError;
   if( p->mxAlloc ) sqlite3_str_reset(p);
   if( eError==SQLITE_TOOBIG ) sqlite3ErrorToParser(p->db, eError);
@@ -383,6 +390,16 @@ void sqlite3_str_vappendf(
       }
     }
 #else
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+    if( c=='m' ){
+      infop = &mtFmtInfo;
+      xtype = etESCAPE_m;
+    }else if( c=='M' ){
+      infop = &mtFmtPiece;
+      xtype = etESCAPE_M;
+    }else
+#endif
+    {
     /* Fast hash-table lookup */
     assert( ArraySize(fmtinfo)==25 );
     idx = ((unsigned)c) % 25;
@@ -394,6 +411,7 @@ void sqlite3_str_vappendf(
     }else{
       infop = &fmtinfo[0];
       xtype = etINVALID;
+    }
     }
 #endif
 
@@ -960,6 +978,35 @@ void sqlite3_str_vappendf(
         }
         continue;
       }
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+      case etESCAPE_M:         /* %M: one untrusted piece of a literal */
+      case etESCAPE_m: {       /* %m: a matchertext literal, M'(content)' */
+        char *zVal;
+        i64 nVal;
+
+        if( bArgList ){
+          zVal = getTextArg(pArgList);
+        }else{
+          zVal = va_arg(ap,char*);
+        }
+        if( zVal==0 ){
+          if( xtype==etESCAPE_m ) sqlite3_str_append(pAccum, "NULL", 4);
+          bufpt = ""; length = width = 0;
+          break;
+        }
+        nVal = (i64)strlen(zVal);
+        if( precision>=0 && precision<nVal ) nVal = precision;
+        if( !sqlite3MatchertextVerify((const unsigned char*)zVal, nVal) ){
+          sqlite3StrAccumSetError(pAccum, SQLITE_MISUSE);
+          return;
+        }
+        if( xtype==etESCAPE_m ) sqlite3_str_append(pAccum, "M'(", 3);
+        sqlite3_str_append(pAccum, zVal, (int)nVal);
+        if( xtype==etESCAPE_m ) sqlite3_str_append(pAccum, ")'", 2);
+        bufpt = ""; length = width = 0;
+        break;
+      }
+#endif
       case etESCAPE_q:          /* %q: Escape ' characters */
       case etESCAPE_Q:          /* %Q: Escape ' and enclose in '...' */
       case etESCAPE_w: {        /* %w: Escape " characters */

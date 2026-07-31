@@ -306,6 +306,18 @@ void sqlite3Dequote(char *z){
   char quote;
   int i, j;
   if( z==0 ) return;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  if( (z[0]=='M' || z[0]=='m') && z[1]=='\'' ){
+    int n = sqlite3Strlen30(z);
+    if( n>=5 && z[n-1]=='\''
+     && sqlite3MatchertextEnd((const unsigned char*)(z+2))==(i64)(n-3)
+    ){
+      memmove(z, z+3, (size_t)(n-5));
+      z[n-5] = 0;
+      return;
+    }
+  }
+#endif
   quote = z[0];
   if( !sqlite3Isquote(quote) ) return;
 #ifdef SQLITE_ENABLE_MATCHERTEXT

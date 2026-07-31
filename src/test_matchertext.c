@@ -94,6 +94,42 @@ static int SQLITE_TCLAPI test_matchertext_end(
   return TCL_OK;
 }
 
+/*
+** Usage:  sqlite3_matchertext_printf FORMAT ?VALUE ...?
+**
+** Run sqlite3_mprintf() with up to four string arguments, so that the %m
+** conversion can be exercised from a test script.  Returns the formatted
+** string, or the empty string with a "rejected" prefix when mprintf returns
+** NULL, which is what a refused value looks like to a caller.
+*/
+static int SQLITE_TCLAPI test_matchertext_printf(
+  void *clientData,
+  Tcl_Interp *interp,
+  int objc,
+  Tcl_Obj *CONST objv[]
+){
+  const char *azArg[4] = { 0, 0, 0, 0 };
+  char *zOut;
+  int i;
+
+  if( objc<2 || objc>6 ){
+    Tcl_WrongNumArgs(interp, 1, objv, "FORMAT ?VALUE ...?");
+    return TCL_ERROR;
+  }
+  for(i=2; i<objc; i++){
+    azArg[i-2] = Tcl_GetString(objv[i]);
+  }
+  zOut = sqlite3_mprintf(Tcl_GetString(objv[1]),
+                         azArg[0], azArg[1], azArg[2], azArg[3]);
+  if( zOut==0 ){
+    Tcl_SetObjResult(interp, Tcl_NewStringObj("rejected", -1));
+  }else{
+    Tcl_SetObjResult(interp, Tcl_NewStringObj(zOut, -1));
+    sqlite3_free(zOut);
+  }
+  return TCL_OK;
+}
+
 #endif /* SQLITE_ENABLE_MATCHERTEXT */
 
 /*
@@ -109,6 +145,7 @@ int Sqlitetest_matchertext_Init(Tcl_Interp *interp){
   } aObjCmd[] = {
     { "sqlite3_matchertext_verify", test_matchertext_verify },
     { "sqlite3_matchertext_end",    test_matchertext_end    },
+    { "sqlite3_matchertext_printf", test_matchertext_printf },
   };
   int i;
   for(i=0; i<(int)(sizeof(aObjCmd)/sizeof(aObjCmd[0])); i++){

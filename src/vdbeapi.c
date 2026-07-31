@@ -1772,6 +1772,17 @@ static int bindText(
   Mem *pVar;
   int rc;
 
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  if( zData!=0 && (encoding==SQLITE_UTF8 || encoding==SQLITE_UTF8_ZT)
+   && p!=0 && p->db!=0 && (p->db->flags & SQLITE_MatchertextOnly)!=0
+  ){
+    i64 nChk = nData<0 ? (i64)strlen((const char*)zData) : nData;
+    if( !sqlite3MatchertextVerify((const unsigned char*)zData, nChk) ){
+      if( xDel!=SQLITE_STATIC && xDel!=SQLITE_TRANSIENT ) xDel((void*)zData);
+      return SQLITE_MISUSE_BKPT;
+    }
+  }
+#endif
   rc = vdbeUnbind(p, (u32)(i-1));
   if( rc==SQLITE_OK ){
     assert( p!=0 && p->aVar!=0 && i>0 && i<=p->nVar ); /* tag-20240917-01 */
