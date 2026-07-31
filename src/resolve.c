@@ -160,6 +160,9 @@ int sqlite3MatchEName(
 */
 static int areDoubleQuotedStringsEnabled(sqlite3 *db, NameContext *pTopNC){
   if( db->init.busy ) return 1;  /* Always support for legacy schemas */
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  if( (db->flags & SQLITE_MatchertextOnly)!=0 ) return 0;
+#endif
   if( pTopNC->ncFlags & NC_IsDDL ){
     /* Currently parsing a DDL statement */
     if( sqlite3WritableSchema(db) && (db->flags & SQLITE_DqsDML)!=0 ){

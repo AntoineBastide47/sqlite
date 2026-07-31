@@ -1039,6 +1039,14 @@ int sqlite3_db_config(sqlite3 *db, int op, ...){
           }else if( onoff==0 ){
             db->flags &= ~(u64)aFlagOp[i].mask;
           }
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+          if( aFlagOp[i].mask==SQLITE_MatchertextOnly
+           && db->aDb[0].pSchema!=0
+           && (db->aDb[0].pSchema->schemaFlags & DB_Matchertext)!=0
+          ){
+            db->flags |= SQLITE_MatchertextOnly;
+          }
+#endif
           if( oldFlags!=db->flags ){
             sqlite3ExpirePreparedStatements(db, 0);
           }

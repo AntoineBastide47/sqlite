@@ -348,6 +348,12 @@ set pragma_def {
   FLAG: ReadOnly Result0
   IF:   !defined(SQLITE_OMIT_SCHEMA_VERSION_PRAGMAS)
 
+  NAME: matchertext
+  TYPE: MATCHERTEXT
+  ARG:  0
+  FLAG: NoColumns1 Result0
+  IF:   defined(SQLITE_ENABLE_MATCHERTEXT)
+
   NAME: freelist_count
   TYPE: HEADER_VALUE
   ARG:  BTREE_FREE_PAGE_COUNT

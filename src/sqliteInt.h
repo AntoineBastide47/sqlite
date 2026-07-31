@@ -1541,6 +1541,7 @@ struct Schema {
 #define DB_SchemaLoaded    0x0001  /* The schema has been loaded */
 #define DB_UnresetViews    0x0002  /* Some views have defined column names */
 #define DB_ResetWanted     0x0008  /* Reset the schema when nSchemaLock==0 */
+#define DB_Matchertext     0x0010  /* File header declares strict mode */
 
 /*
 ** The number of different kinds of things that can be limited
@@ -5980,6 +5981,8 @@ sqlite3_uint64 sqlite3Hwtime(void);
 #ifdef SQLITE_ENABLE_MATCHERTEXT
 i64 sqlite3MatchertextEnd(const unsigned char*);
 int sqlite3MatchertextVerify(const unsigned char*, i64);
+char *sqlite3MatchertextEncode(const char*, i64, i64*);
+i64 sqlite3MatchertextDecodeInPlace(char*, i64, int);
 #endif
 
 #endif /* SQLITEINT_H */

@@ -1198,9 +1198,31 @@ term(A) ::= STRING(X).          {A=tokenExpr(pParse,@X,X); /*A-overwrites-X*/}
 %ifdef SQLITE_ENABLE_MATCHERTEXT
 term(A) ::= MTSTRING(X). {
   assert( X.n>=5 );        /* The shortest literal is M'()' */
-  X.z += 3;
-  X.n -= 5;
-  A = sqlite3ExprAlloc(pParse->db, TK_STRING, &X, 0);
+  if( (pParse->db->flags & SQLITE_MatchertextOnly)!=0 ){
+    /* Strict database: keep the content encoded, canonicalized by a
+    ** decode/re-encode, so literals and bindings compare equal at rest */
+    char *zBuf = sqlite3DbStrNDup(pParse->db, X.z+3, X.n-5);
+    A = 0;
+    if( zBuf ){
+      i64 nDec = sqlite3MatchertextDecodeInPlace(zBuf, (i64)(X.n-5), 1);
+      i64 nEnc = 0;
+      char *zEnc = sqlite3MatchertextEncode(zBuf, nDec, &nEnc);
+      if( zEnc ){
+        Token t;
+        t.z = zEnc;
+        t.n = (unsigned int)nEnc;
+        A = sqlite3ExprAlloc(pParse->db, TK_STRING, &t, 0);
+        sqlite3_free(zEnc);
+      }else{
+        sqlite3OomFault(pParse->db);
+      }
+      sqlite3DbFree(pParse->db, zBuf);
+    }
+  }else{
+    /* sqlite3Dequote() strips the M'( )' delimiters and decodes escapes */
+    A = sqlite3ExprAlloc(pParse->db, TK_STRING, &X, 0);
+    if( A ) sqlite3Dequote(A->u.zToken);
+  }
   assert( A==0 || (A->pLeft==0 && A->pRight==0) );
   assert( A==0 || (A->flags & (EP_Quoted|EP_DblQuoted))==0 );
 }

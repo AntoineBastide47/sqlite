@@ -1022,6 +1022,29 @@ int sqlite3_step(sqlite3_stmt *pStmt){
     }
     assert( v->expired==0 );
   }
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  /* Strict mode: decode each text result column at the API boundary.
+  ** Skip internal readers (schema load, VACUUM), which must see the
+  ** stored bytes exactly. */
+  if( rc==SQLITE_ROW && (db->flags & SQLITE_MatchertextOnly)!=0
+   && db->init.busy==0 && db->nVdbeExec==0
+   && v->pResultRow!=0
+  ){
+    int i;
+    for(i=0; i<(int)v->nResColumn; i++){
+      Mem *pMem = &v->pResultRow[i];
+      if( (pMem->flags & MEM_Str)==0 ) continue;
+      if( pMem->enc!=SQLITE_UTF8 ) continue;
+      if( pMem->n<2 || memchr(pMem->z, '\\', (size_t)pMem->n)==0 ) continue;
+      if( sqlite3VdbeMemMakeWriteable(pMem)!=SQLITE_OK ){
+        rc = SQLITE_NOMEM_BKPT;
+        break;
+      }
+      pMem->n = (int)sqlite3MatchertextDecodeInPlace(pMem->z, (i64)pMem->n, 1);
+      pMem->flags |= MEM_Term;
+    }
+  }
+#endif
   sqlite3_mutex_leave(db->mutex);
   return rc;
 }
@@ -1772,17 +1795,6 @@ static int bindText(
   Mem *pVar;
   int rc;
 
-#ifdef SQLITE_ENABLE_MATCHERTEXT
-  if( zData!=0 && (encoding==SQLITE_UTF8 || encoding==SQLITE_UTF8_ZT)
-   && p!=0 && p->db!=0 && (p->db->flags & SQLITE_MatchertextOnly)!=0
-  ){
-    i64 nChk = nData<0 ? (i64)strlen((const char*)zData) : nData;
-    if( !sqlite3MatchertextVerify((const unsigned char*)zData, nChk) ){
-      if( xDel!=SQLITE_STATIC && xDel!=SQLITE_TRANSIENT ) xDel((void*)zData);
-      return SQLITE_MISUSE_BKPT;
-    }
-  }
-#endif
   rc = vdbeUnbind(p, (u32)(i-1));
   if( rc==SQLITE_OK ){
     assert( p!=0 && p->aVar!=0 && i>0 && i<=p->nVar ); /* tag-20240917-01 */
@@ -1808,6 +1820,29 @@ static int bindText(
       if( rc==SQLITE_OK && encoding!=0 ){
         rc = sqlite3VdbeChangeEncoding(pVar, ENC(p->db));
       }
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+      /* Strict mode: bind the canonical encoding; sqlite3_step() decodes
+      ** on the way out.  Not applied to UTF-16 native databases. */
+      if( rc==SQLITE_OK
+       && (p->db->flags & SQLITE_MatchertextOnly)!=0
+       && (pVar->flags & MEM_Str)!=0
+       && pVar->enc==SQLITE_UTF8
+       && (memchr(pVar->z, '\\', (size_t)pVar->n)!=0
+           || !sqlite3MatchertextVerify((const unsigned char*)pVar->z,
+                                        (i64)pVar->n))
+      ){
+        i64 nEnc = 0;
+        char *zEnc = sqlite3MatchertextEncode(pVar->z, pVar->n, &nEnc);
+        if( zEnc==0 ){
+          rc = SQLITE_NOMEM_BKPT;
+        }else if( nEnc>(i64)p->db->aLimit[SQLITE_LIMIT_LENGTH] ){
+          sqlite3_free(zEnc);
+          rc = SQLITE_TOOBIG;
+        }else{
+          rc = sqlite3VdbeMemSetText(pVar, zEnc, nEnc, sqlite3_free);
+        }
+      }
+#endif
       if( rc ){
         sqlite3Error(p->db, rc);
         rc = sqlite3ApiExit(p->db, rc);

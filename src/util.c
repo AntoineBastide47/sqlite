@@ -314,6 +314,7 @@ void sqlite3Dequote(char *z){
     ){
       memmove(z, z+3, (size_t)(n-5));
       z[n-5] = 0;
+      sqlite3MatchertextDecodeInPlace(z, (i64)(n-5), 1);
       return;
     }
   }
@@ -326,6 +327,7 @@ void sqlite3Dequote(char *z){
     if( i>=2 && z[i-1]==']' && sqlite3MatchertextVerify((const unsigned char*)(z+1), (i64)(i-2)) ){
       memmove(z, z+1, (size_t)(i-2));
       z[i-2] = 0;
+      sqlite3MatchertextDecodeInPlace(z, (i64)(i-2), 0);
       return;
     }
   }

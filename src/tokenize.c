@@ -626,6 +626,9 @@ int sqlite3RunParser(Parse *pParse, const char *zSql){
   i64 n = 0;                      /* Length of the next token token */
   int tokenType;                  /* type of the next token */
   int lastTokenParsed = -1;       /* type of the previous token */
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  int mtInPragma = 0;             /* Current statement is a PRAGMA */
+#endif
   sqlite3 *db = pParse->db;       /* The database connection */
   i64 mxSqlLen;                   /* Max length of an SQL string */
   Parse *pParentParse = 0;        /* Outer parse context, if any */
@@ -732,18 +735,45 @@ int sqlite3RunParser(Parse *pParse, const char *zSql){
       }
     }
 #ifdef SQLITE_ENABLE_MATCHERTEXT
-    if( tokenType==TK_STRING
-     && (db->flags & SQLITE_MatchertextOnly)!=0
+    /* PRAGMA statements are administrative, not a value hole, and some
+    ** (e.g. encoding) must run before the schema loads, so they are exempt
+    ** from the literal rules below. */
+    if( tokenType==TK_PRAGMA
+     && (lastTokenParsed<0 || lastTokenParsed==TK_SEMI
+         || lastTokenParsed==TK_EXPLAIN)
+    ){
+      mtInPragma = 1;
+    }else if( tokenType==TK_SEMI ){
+      mtInPragma = 0;
+    }
+    if( !mtInPragma
+     && (tokenType==TK_STRING || tokenType==TK_MTSTRING)
      && db->init.busy==0
      && (db->mDbFlags & DBFLAG_PreferBuiltin)==0
      && !IN_SPECIAL_PARSE
     ){
-      Token x;
-      x.z = zSql;
-      x.n = (u32)n;
-      sqlite3ErrorMsg(pParse,
-          "quoted string literal %T: use a matchertext literal M'(...)'", &x);
-      break;
+      /* The header's strict-mode bit is learned at schema load, so load the
+      ** schema before acting on a literal.  Non-OOM failures fall back to
+      ** stock behavior. */
+      if( (db->flags & SQLITE_MatchertextOnly)==0
+       && !DbHasProperty(db, 0, DB_SchemaLoaded)
+      ){
+        if( sqlite3ReadSchema(pParse)!=SQLITE_OK ){
+          if( db->mallocFailed || pParse->rc==SQLITE_NOMEM ) break;
+          sqlite3DbFree(db, pParse->zErrMsg);
+          pParse->zErrMsg = 0;
+          pParse->rc = SQLITE_OK;
+          pParse->nErr = 0;
+        }
+      }
+      if( tokenType==TK_STRING && (db->flags & SQLITE_MatchertextOnly)!=0 ){
+        Token x;
+        x.z = zSql;
+        x.n = (u32)n;
+        sqlite3ErrorMsg(pParse,
+            "quoted string literal %T: use a matchertext literal M'(...)'", &x);
+        break;
+      }
     }
 #endif
     pParse->sLastToken.z = zSql;

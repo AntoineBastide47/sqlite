@@ -216,6 +216,9 @@ int sqlite3InitOne(sqlite3 *db, int iDb, char **pzErrMsg, u32 mFlags){
   Db *pDb;
   char const *azArg[6];
   int meta[5];
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  u32 mtMeta = 0;
+#endif
   InitData initData;
   const char *zSchemaTabName;
   int openedTransaction = 0;
@@ -308,6 +311,13 @@ int sqlite3InitOne(sqlite3 *db, int iDb, char **pzErrMsg, u32 mFlags){
     memset(meta, 0, sizeof(meta));
   }
   pDb->pSchema->schema_cookie = meta[BTREE_SCHEMA_VERSION-1];
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  /* Read here while the transaction is open; applied only if the load
+  ** succeeds, so a corrupt header cannot switch strict mode on */
+  if( iDb==0 && (db->flags & SQLITE_ResetDatabase)==0 ){
+    sqlite3BtreeGetMeta(pDb->pBt, BTREE_MATCHERTEXT, &mtMeta);
+  }
+#endif
 
   /* If opening a non-empty database, check the text encoding. For the
   ** main database, set sqlite3.enc to the encoding of the main database.
@@ -420,6 +430,17 @@ int sqlite3InitOne(sqlite3 *db, int iDb, char **pzErrMsg, u32 mFlags){
     */
     DbSetProperty(db, iDb, DB_SchemaLoaded);
     rc = SQLITE_OK;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+    /* The header, not the connection, is the authority on strict mode */
+    if( iDb==0 ){
+      if( mtMeta==1 ){
+        db->flags |= SQLITE_MatchertextOnly;
+        pDb->pSchema->schemaFlags |= DB_Matchertext;
+      }else{
+        pDb->pSchema->schemaFlags &= ~DB_Matchertext;
+      }
+    }
+#endif
   }
 
   /* Jump here for an error that occurs after successfully allocating

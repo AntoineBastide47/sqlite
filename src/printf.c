@@ -1001,7 +1001,23 @@ void sqlite3_str_vappendf(
           return;
         }
         if( xtype==etESCAPE_m ) sqlite3_str_append(pAccum, "M'(", 3);
-        sqlite3_str_append(pAccum, zVal, (int)nVal);
+        if( memchr(zVal, '\\', (size_t)nVal)==0 ){
+          sqlite3_str_append(pAccum, zVal, (int)nVal);
+        }else{
+          i64 nEnc = 0;
+          char *zEnc = sqlite3MatchertextEncode(zVal, nVal, &nEnc);
+          if( zEnc==0 ){
+            sqlite3StrAccumSetError(pAccum, SQLITE_NOMEM);
+            return;
+          }
+          if( nEnc>0x7fffffff ){
+            sqlite3_free(zEnc);
+            sqlite3StrAccumSetError(pAccum, SQLITE_TOOBIG);
+            return;
+          }
+          sqlite3_str_append(pAccum, zEnc, (int)nEnc);
+          sqlite3_free(zEnc);
+        }
         if( xtype==etESCAPE_m ) sqlite3_str_append(pAccum, ")'", 2);
         bufpt = ""; length = width = 0;
         break;

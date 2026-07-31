@@ -268,8 +268,12 @@ do_catchsql_test 3.4.1 {
 #-------------------------------------------------------------------------
 # 4.*: The value.
 #
-# What sits between the delimiters is delivered as data, byte for byte.  No
-# escape processing of any kind runs over it.
+# What sits between the delimiters is delivered as data.  One decoding pass
+# runs over it, for the matchertext escape alphabet only: \\ is a backslash,
+# and \o() \c() \o[] \c[] \o{} \c{} are the six matchers, so a value that
+# could not embed verbatim can still be written.  SQL's own escaping never
+# applies: quotes do not double, and a backslash sequence that does not
+# spell one of the seven escapes passes through byte for byte.
 
 do_execsql_test 4.0 {
   CREATE TABLE t1(name TEXT);
@@ -283,8 +287,18 @@ do_test 4.1.2 { execsql {SELECT length(M'(it''s)')} } {5}
 do_test 4.1.3 { execsql {SELECT 'it''s'} } {it's}
 do_test 4.1.4 { execsql {SELECT length('it''s')} } {4}
 
-# 4.2: backslashes are ordinary bytes, as they are everywhere in SQL
+# 4.2: a backslash that does not introduce an escape is an ordinary byte
 do_test 4.2.1 { execsql {SELECT M'(a\nb)'} } [list {a\nb}]
+
+# 4.2.2+: the escape alphabet decodes.  A doubled backslash is one
+# backslash, and an escaped matcher is the matcher, which is how a value
+# carrying an unmatched matcher is written at all.
+do_test 4.2.2 { execsql {SELECT M'(a\\b)'} } [list {a\b}]
+do_test 4.2.3 { execsql {SELECT M'(\o())'} } {(}
+do_test 4.2.4 { execsql {SELECT M'(smile :\c[])'} } {{smile :]}}
+do_test 4.2.5 { execsql {SELECT length(M'(\o{})')} } {1}
+# A malformed escape is not an escape: the pair must be real and adjacent
+do_test 4.2.6 { execsql {SELECT M'(\o(x))'} } [list {\o(x)}]
 
 # 4.3: the value reaches the database and comes back unchanged
 do_test 4.3.1 {
@@ -478,7 +492,9 @@ do_execsql_test 7.2.3 {
   SELECT count(*) FROM [x([{}])y];
 } {0}
 
-# 7.3: the name may hold what a name never could, taken verbatim
+# 7.3: the name may hold what a name never could.  The six matcher escapes
+# decode in the interior; every other byte, backslash included, is taken
+# verbatim.
 do_test 7.3.1 {
   execsql {CREATE TABLE [it's ; -- ok](v)}
   execsql {SELECT name FROM sqlite_schema WHERE name LIKE 'it%'}
@@ -525,6 +541,36 @@ do_test 7.7.2 {
   sqlite3 db test.db
   execsql {SELECT z FROM [v[7]]}
 } {2}
+
+# 7.8: the six matcher escapes decode inside a bracketed name, so a name
+# carrying an unmatched matcher can be written into the hole.  Nothing else
+# decodes there: a backslash is an ordinary byte in a name, as it always
+# was, so [e\\f] names e\\f here exactly as in stock SQLite.
+#
+# The one spelling whose meaning changes is a name that itself contains a
+# valid matcher escape, recorded at 7.8.3 the way 7.4.1 records the
+# unbalanced-bracket cost: stock SQLite reads [g\o()h] as the name g\o()h,
+# and here it is the name g(h.
+do_test 7.8.1 {
+  execsql "CREATE TABLE \[e\\\\f\](x); INSERT INTO \[e\\\\f\] VALUES(8)"
+  execsql {SELECT name FROM sqlite_schema WHERE name LIKE 'e%f'}
+} [list "e\\\\f"]
+do_test 7.8.2 {
+  execsql "SELECT x FROM \[e\\\\f\]"
+} {8}
+do_test 7.8.3 {
+  execsql "CREATE TABLE \[g\\o()h\](y)"
+  execsql {SELECT name FROM sqlite_schema WHERE name LIKE 'g%h'}
+} [list {g(h}]
+do_test 7.8.4 {
+  execsql {SELECT count(*) FROM [g\o()h]}
+} {0}
+# The decoded name cannot be spelled verbatim, since its bracket is
+# unmatched; the escaped spelling is the only one, which is the point of
+# having it.
+do_catchsql_test 7.8.5 {
+  SELECT count(*) FROM [g(h]
+} {1 {unrecognized token: "[g(h"}}
 
 #-------------------------------------------------------------------------
 # 8.*: L2 against the double-quoted string misfeature.
@@ -794,9 +840,26 @@ do_test 10.7.2 {
 do_test 10.8.1 { sqlite3_matchertext_printf {WHERE n = %m} } {WHERE n = NULL}
 
 # 10.9: the other conversions are untouched
+# The three escaping conversions are unchanged, and deliberately so.  Each
+# doubles the delimiter its own context uses, which is correct only while the
+# caller puts the result in that context.
 do_test 10.9.1 {
   sqlite3_matchertext_printf {%q | %Q | %w} {a'b} {c'd} {e"f}
 } {a''b | 'c''d' | e""f}
+
+# The contrast with %m, and the reason they were left alone.  An unmatched
+# matcher passes straight through all three: it is not a delimiter of theirs,
+# so there is nothing for them to double.  Containment there rests entirely on
+# the caller having chosen the conversion that matches the sink.
+do_test 10.9.2 {
+  sqlite3_matchertext_printf {%q | %Q | %w} {a]b} {c]d} {e]f}
+} {a]b | 'c]d' | e]f}
+
+# %m is the one that does not depend on that choice.  It refuses what cannot
+# embed rather than transforming it to suit a context it was not told about.
+do_test 10.9.3 {
+  sqlite3_matchertext_printf {%m} {c]d}
+} {rejected}
 
 # 10.10: what %m produces parses, and the value stays data
 do_execsql_test 10.10.0 {
@@ -815,6 +878,24 @@ foreach {tn val cnt} {
   } $cnt
 }
 do_execsql_test 10.10.9 { SELECT count(*) FROM t10; } {2}
+
+# 10.11: the reader decodes the escape alphabet inside the literal, so the
+# write path escapes backslashes on the way in and the round trip is exact.
+# Both conversions take the raw value; content assembled from %M pieces is
+# already in the encoded domain and is pasted into a literal directly, not
+# passed through %m a second time.
+do_test 10.11.1 {
+  sqlite3_matchertext_printf {%m} "a\\b"
+} "M'(a\\\\b)'"
+do_test 10.11.2 {
+  sqlite3_matchertext_printf {Hi [%M] bye} "a\\b"
+} "Hi \[a\\\\b\] bye"
+do_test 10.11.3 {
+  execsql [sqlite3_matchertext_printf {SELECT %m} "a\\b"]
+} [list "a\\b"]
+do_test 10.11.4 {
+  execsql [sqlite3_matchertext_printf {SELECT %m} "looks like \\o()"]
+} [list "looks like \\o()"]
 
 #-------------------------------------------------------------------------
 # 11.*: SQLITE_DBCONFIG_MATCHERTEXT.
@@ -899,5 +980,121 @@ do_test 11.6.1 {
   sqlite3_db_config db MATCHERTEXT 0
   execsql {SELECT count(*) FROM t11c WHERE n = 'a'}
 } {1}
+
+#-------------------------------------------------------------------------
+# 12.*: Strict mode closes the DQS fallback.
+#
+# The quoted value hole exists in two spellings.  Section 11 shows the
+# single-quoted one refused; DQS is the double-quoted one, where "x" becomes
+# a string when it fails to resolve as a name.  Strict mode masks that
+# fallback, so under it a double-quoted token is a name only, exactly the
+# behavior DQS_DML=0 already gives.
+
+do_execsql_test 12.0 {
+  CREATE TABLE t12(a);
+  INSERT INTO t12 VALUES('zzz');
+}
+
+# Established by 8.1: with strict mode off, the misfeature is on.  The
+# error is the one DQS_DML=0 produces, hint and all.
+do_test 12.1.1 {
+  sqlite3_db_config db MATCHERTEXT 1
+  catchsql {SELECT "nosuchcol12"}
+} {1 {no such column: "nosuchcol12" - should this be a string literal in single-quotes?}}
+
+# A double-quoted token that does resolve is a name, and still works
+do_execsql_test 12.1.2 { SELECT "a" FROM t12 } {zzz}
+
+# And the mask lifts with the flag
+do_test 12.2.1 {
+  sqlite3_db_config db MATCHERTEXT 0
+  execsql {SELECT "nosuchcol12"}
+} {nosuchcol12}
+
+#-------------------------------------------------------------------------
+# 13.*: PRAGMA matchertext, the database as the authority.
+#
+# The strict mode of section 11 was a connection setting.  The pragma writes
+# the mode into the database header instead, where every connection that
+# opens the file inherits it and none can opt out: the database, not the
+# connection, decides how it is spoken to.
+#
+# Under a strict database, text at rest lives in the encoded domain.  A
+# bound value is canonically encoded on its way in, never refused; the API
+# boundary decodes on the way out; and a literal is canonicalized at parse.
+# One representation at rest is what makes a literal-written value and a
+# bound value compare equal.
+
+do_test 13.0.1 {
+  db close
+  forcedelete test13.db
+  sqlite3 db test13.db
+  execsql {
+    PRAGMA matchertext=1;
+    CREATE TABLE t13(v TEXT);
+  }
+  execsql {PRAGMA matchertext}
+} {1}
+
+# 13.1: strict immediately on the connection that set it
+do_catchsql_test 13.1.1 {
+  SELECT 'raw'
+} {1 {quoted string literal 'raw': use a matchertext literal M'(...)'}}
+
+# 13.2: a fresh connection inherits the mode from the file before its first
+# statement, with no db_config anywhere in sight
+do_test 13.2.1 {
+  db close
+  sqlite3 db test13.db
+  catchsql {SELECT 'raw'}
+} {1 {quoted string literal 'raw': use a matchertext literal M'(...)'}}
+
+# 13.3: the connection cannot opt out while the header says on.  The
+# db_config call reports the mode still in force.
+do_test 13.3.1 {
+  sqlite3_db_config db MATCHERTEXT 0
+} {1}
+do_catchsql_test 13.3.2 {
+  SELECT 'raw'
+} {1 {quoted string literal 'raw': use a matchertext literal M'(...)'}}
+
+# 13.4: binding is total.  A value VERIFY refuses is encoded, not rejected,
+# and the API decodes on the way out, so the round trip is exact.
+do_test 13.4.1 {
+  execsql {INSERT INTO t13 VALUES(M'(alice)')}
+  set stmt [sqlite3_prepare_v2 db {INSERT INTO t13 VALUES(?)} -1 tail]
+  sqlite3_bind_text $stmt 1 {smile :]} 8
+  sqlite3_step $stmt
+  sqlite3_finalize $stmt
+  execsql {SELECT v FROM t13 WHERE v LIKE M'(smile%)'}
+} [list {smile :]}]
+
+# What sits at rest is the encoded form, and SQL functions see that domain:
+# length() counts the bytes of smile :\c[].
+do_execsql_test 13.4.2 {
+  SELECT length(v) FROM t13 WHERE v LIKE M'(smile%)'
+} {11}
+
+# 13.5: a literal spelling the same value compares equal to the bound one,
+# because both are canonical at rest
+do_execsql_test 13.5.1 {
+  SELECT count(*) FROM t13 WHERE v = M'(smile :\c[])'
+} {1}
+
+# Canonicalization at parse: a hand-written lone backslash and a bound
+# backslash meet at the same bytes
+do_test 13.5.2 {
+  set stmt [sqlite3_prepare_v2 db {INSERT INTO t13 VALUES(?)} -1 tail]
+  sqlite3_bind_text $stmt 1 "\\" 1
+  sqlite3_step $stmt
+  sqlite3_finalize $stmt
+  execsql {SELECT count(*) FROM t13 WHERE v = M'(\)'}
+} {1}
+
+# 13.6: the file is the authority for turning off as well
+do_test 13.6.1 {
+  execsql {PRAGMA matchertext=0}
+  execsql {SELECT 'raw'}
+} {raw}
 
 finish_test
