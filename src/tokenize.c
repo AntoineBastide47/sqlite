@@ -628,6 +628,8 @@ int sqlite3RunParser(Parse *pParse, const char *zSql){
   int lastTokenParsed = -1;       /* type of the previous token */
 #ifdef SQLITE_ENABLE_MATCHERTEXT
   int mtInPragma = 0;             /* Current statement is a PRAGMA */
+  int mtChecked = 0;              /* Text already verified as matchertext */
+  const char *zStmt = zSql;       /* The text as handed to this parse */
 #endif
   sqlite3 *db = pParse->db;       /* The database connection */
   i64 mxSqlLen;                   /* Max length of an SQL string */
@@ -669,6 +671,24 @@ int sqlite3RunParser(Parse *pParse, const char *zSql){
   pParentParse = db->pParse;
   db->pParse = pParse;
   while( 1 ){
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+    /* Strict mode: the text itself must be matchertext, checked whole and
+    ** before any hole is located. */
+    if( !mtChecked
+     && (db->flags & SQLITE_MatchertextOnly)!=0
+     && db->init.busy==0
+     && (db->mDbFlags & DBFLAG_PreferBuiltin)==0
+     && !IN_SPECIAL_PARSE
+    ){
+      mtChecked = 1;
+      if( !sqlite3MatchertextVerify((const unsigned char*)zStmt,
+                                    (i64)strlen(zStmt)) ){
+        sqlite3ErrorMsg(pParse, "SQL is not matchertext: a matcher outside a "
+                                "hole is unmatched");
+        break;
+      }
+    }
+#endif
     n = sqlite3GetToken((u8*)zSql, &tokenType);
     mxSqlLen -= n;
     if( mxSqlLen<0 ){
@@ -785,6 +805,23 @@ int sqlite3RunParser(Parse *pParse, const char *zSql){
     if( pParse->rc!=SQLITE_OK ) break;
   }
   assert( nErr==0 );
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  /* The mode is read at schema load, which for a cold connection happens
+  ** during this very parse, after the loop above has ended.  Check again
+  ** here so the first statement is covered too. */
+  if( !mtChecked
+   && (db->flags & SQLITE_MatchertextOnly)!=0
+   && db->init.busy==0
+   && (db->mDbFlags & DBFLAG_PreferBuiltin)==0
+   && !IN_SPECIAL_PARSE
+   && (pParse->rc==SQLITE_OK || pParse->rc==SQLITE_DONE)
+   && !sqlite3MatchertextVerify((const unsigned char*)zStmt,
+                                (i64)strlen(zStmt))
+  ){
+    sqlite3ErrorMsg(pParse,
+        "SQL is not matchertext: a matcher outside a hole is unmatched");
+  }
+#endif
 #ifdef YYTRACKMAXSTACKDEPTH
   sqlite3_mutex_enter(sqlite3MallocMutex());
   sqlite3StatusHighwater(SQLITE_STATUS_PARSER_STACK,

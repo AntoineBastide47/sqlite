@@ -930,10 +930,24 @@ do_test 10.12.5 { sqlite3_matchertext_encode {} } {}
 #-------------------------------------------------------------------------
 # 11.*: SQLITE_DBCONFIG_MATCHERTEXT.
 #
-# The quote-delimited value hole is what string concatenation fills, so the
-# setting refuses it in SQL arriving from outside.  SQL that SQLite generates
-# for itself is exempt: it is written in the C source, and it is what the
-# schema writer emits through %Q.
+# The setting imposes two rules on SQL arriving from outside:
+#
+#   1. no quote-delimited literal, the hole that string concatenation fills;
+#   2. the text must itself be matchertext, checked whole and before any hole
+#      boundary is located.
+#
+# Rule 2 is what makes rule 1 worth having.  Without it an application can
+# still write the delimiters by hand and paste raw bytes between them, and a
+# payload beginning ")'" closes the hole and continues in host syntax.  Such
+# a payload leaves an unmatched matcher in the text, so rule 2 refuses it.
+#
+# What neither rule can reach is a payload that balances its own matchers,
+# because nothing distinguishes it from a template the application meant to
+# write; 11.8 records that boundary.  Premise A2 therefore still rests on the
+# application routing values through %m, %M or a bound parameter.
+#
+# SQL that SQLite generates for itself is exempt: it is written in the C
+# source, and it is what the schema writer emits through %Q.
 #
 # Off by default, so a connection behaves as SQLite always has until it asks
 # for the tighter rule.
@@ -949,8 +963,8 @@ do_execsql_test 11.0 {
 # 11.1: off by default, a literal works as always
 do_execsql_test 11.1.1 { SELECT count(*) FROM t11 WHERE n = 'a' } {1}
 
-# 11.2: with the setting on, a quoted literal from outside is refused, so a
-# statement built by concatenation cannot be written at all
+# 11.2: rule 1.  With the setting on, a quoted literal from outside is
+# refused, so the hole that concatenation traditionally fills is unavailable
 do_test 11.2.1 {
   sqlite3_db_config db MATCHERTEXT 1
   catchsql {SELECT count(*) FROM t11 WHERE n = 'a'}
@@ -1009,6 +1023,135 @@ do_test 11.5.6 {
 do_test 11.6.1 {
   sqlite3_db_config db MATCHERTEXT 0
   execsql {SELECT count(*) FROM t11c WHERE n = 'a'}
+} {1}
+
+#-------------------------------------------------------------------------
+# 11.7: rule 2, the text must be matchertext.
+#
+# The application writes the delimiters itself and pastes an untrusted value
+# between them, which is what rule 1 alone leaves open.  A payload that
+# closes the hole and continues in host syntax has to emit the closer, and
+# the closer it emits is unmatched, so the text is not matchertext.
+
+do_test 11.7.0 {
+  sqlite3_db_config db MATCHERTEXT 1
+  execsql {SELECT count(*) FROM t11c}
+} {3}
+
+# The canonical breakout, hand-built hole and all
+foreach {tn payload} {
+  1  {)' OR 1=1 --}
+  2  {)' OR 1=1 ; DROP TABLE t11c --}
+  3  {)' UNION SELECT name FROM sqlite_schema --}
+  4  {)'}
+} {
+  do_test 11.7.$tn {
+    catchsql "SELECT count(*) FROM t11c WHERE n = M'($payload)'"
+  } {1 {SQL is not matchertext: a matcher outside a hole is unmatched}}
+}
+
+# The rule is about the text, not about holes, so an unmatched matcher
+# anywhere in SQL from outside is refused
+do_test 11.7.5 {
+  catchsql {SELECT count(*) FROM t11c WHERE n = M'(a)' AND (1=1}
+} {1 {SQL is not matchertext: a matcher outside a hole is unmatched}}
+
+# What the application writes through %m always passes, because the encoder's
+# output is matchertext whatever the value was
+foreach {tn payload cnt} {
+  1  {)' OR 1=1 --}  0
+  2  {smile :]}      0
+  3  {a}             1
+} {
+  do_test 11.7.6.$tn {
+    execsql [sqlite3_matchertext_printf \
+        {SELECT count(*) FROM t11c WHERE n = %m} $payload]
+  } $cnt
+}
+
+# 11.8: the boundary.  A payload that balances its own matchers is refused by
+# neither rule: it opens a hole of its own so the trailing delimiter closes
+# it, and the result is a well-formed statement with two empty holes.  No
+# lexical rule separates that from a template the application meant to write,
+# which is why premise A2 belongs to the application and not to the database.
+do_test 11.8.1 {
+  execsql "SELECT count(*) FROM t11c WHERE n = M'()' OR 1=1 OR n = M'()'"
+} {3}
+do_test 11.8.2 {
+  set payload {)' OR 1=1 OR n = M'(}
+  list [sqlite3_matchertext_verify \
+            "SELECT count(*) FROM t11c WHERE n = M'($payload)'"] \
+       [execsql "SELECT count(*) FROM t11c WHERE n = M'($payload)'"]
+} {1 3}
+# Routed through %m instead, the same payload is inert
+do_test 11.8.3 {
+  execsql [sqlite3_matchertext_printf \
+      {SELECT count(*) FROM t11c WHERE n = %m} {)' OR 1=1 OR n = M'(}]
+} {0}
+
+# 11.9: the rule reaches both holes, and reaches a statement carrying no
+# hole at all, since it is a property of the text rather than of a hole.
+#
+# Each case opens its own connection so that the statement under test is the
+# first one parsed there.  That matters: the mode is read from the header at
+# schema load, which for a cold connection happens only after the parse, so
+# a check made solely during tokenizing would miss exactly these.
+do_test 11.9.0 {
+  db close
+  forcedelete test119.db
+  sqlite3 db test119.db
+  execsql {
+    PRAGMA matchertext=1;
+    CREATE TABLE u(name);
+    INSERT INTO u VALUES(M'(alice)'), (M'(bob)');
+  }
+  db close
+  set res [list]
+  foreach {tn sql} {
+    name    {SELECT count(*) FROM [u] WHERE 1=1 --]}
+    value   {SELECT count(*) FROM u WHERE name = M'()' OR 1=1 --)'}
+    nohole  {SELECT count(*) FROM u WHERE 1=1 --)}
+    opener  {SELECT count(*) FROM u WHERE name = M'(a)' AND (1=1}
+  } {
+    sqlite3 cold test119.db
+    lappend res $tn [catch {cold eval $sql}]
+    cold close
+  }
+  set res
+} {name 1 value 1 nohole 1 opener 1}
+
+# The same connections accept the legitimate spelling of each
+do_test 11.9.1 {
+  set res [list]
+  foreach {tn sql} {
+    name   {SELECT count(*) FROM [u]}
+    value  {SELECT count(*) FROM u WHERE name = M'(alice)'}
+    plain  {SELECT count(*) FROM u}
+  } {
+    sqlite3 cold test119.db
+    lappend res $tn [cold eval $sql]
+    cold close
+  }
+  set res
+} {name 2 value 1 plain 2}
+
+# 11.9.2: a bound parameter is not text, so the rule does not touch it and a
+# value that is not matchertext still binds, encoded on the way in
+do_test 11.9.2 {
+  sqlite3 db test119.db
+  set stmt [sqlite3_prepare_v2 db {SELECT count(*) FROM u WHERE name = ?} -1 tail]
+  sqlite3_bind_text $stmt 1 {smile :]} 8
+  sqlite3_step $stmt
+  set n [sqlite3_column_text $stmt 0]
+  sqlite3_finalize $stmt
+  set n
+} {0}
+
+do_test 11.9.9 {
+  db close
+  sqlite3 db test.db
+  sqlite3_db_config db MATCHERTEXT 0
+  set x 1
 } {1}
 
 #-------------------------------------------------------------------------
@@ -1202,5 +1345,140 @@ foreach {tn sql res} {
 } {
   do_test 14.6.$tn { db complete $sql } $res
 }
+
+#-------------------------------------------------------------------------
+# 15.*: The corpus experiment, pinned.
+#
+# pipeline/sqli_experiment.py places every recorded SQL attack payload into a
+# real statement and compares the compiled bytecode against the same statement
+# holding a benign value. This layer keeps a few of its cases here, so a
+# regression is caught by "make matchertext" rather than only by a run that
+# needs data/cve.db.
+#
+# Two gaps in 4.5 are what these cover. It pastes the payload into M'(...)' by
+# hand, so it can only use payloads that already balance; and it never composes
+# %m with the skeleton comparison, although %m is the conversion that exists
+# precisely to carry a value that does not balance.
+
+do_execsql_test 15.0 {
+  CREATE TABLE t15(name TEXT, id INTEGER);
+  INSERT INTO t15 VALUES('alice',1),('bob',2);
+}
+
+# mt_m_skeleton is 4.5's comparison with the literal written by %m rather than
+# by hand, so an unbalanced payload can be tested at all.
+proc mt_m_skeleton {sql payload} {
+  set out [list]
+  foreach {addr opcode p1 p2 p3 p4 p5 comment} \
+      [execsql [sqlite3_matchertext_printf $sql $payload]] {
+    lappend out $addr $opcode $p1 $p2 $p3 $p5
+  }
+  return $out
+}
+
+set mt15_hosts {
+  select   {EXPLAIN SELECT id FROM t15 WHERE name = %m}
+  insert   {EXPLAIN INSERT INTO t15(name) VALUES(%m)}
+  like     {EXPLAIN SELECT id FROM t15 WHERE name LIKE %m}
+  ordering {EXPLAIN SELECT %m AS c FROM t15 ORDER BY 1}
+}
+
+# 15.1: values 4.5 cannot express, because none of them balances.  Every one
+# reaches the parser through %m, which escapes the unmatched matchers.
+set mt15_unbalanced {
+  1  {x) OR 1=1 --}
+  2  {smile :]}
+  3  {)(}
+  4  {(a]}
+  5  {)' OR 1=1 --}
+  6  {]}
+  7  {f(x}
+}
+foreach {host sql} $mt15_hosts {
+  set mt15_base [mt_m_skeleton $sql {alice}]
+  foreach {tn payload} $mt15_unbalanced {
+    do_test 15.1.$host.$tn { mt_m_skeleton $sql $payload } $mt15_base
+  }
+}
+
+# 15.2: strings taken from the corpus itself, each one a payload that does
+# break out of a quoted slot when it is concatenated (see 15.4).
+set mt15_corpus {
+  1  {admin' --}
+  2  {' or 1/*}
+  3  {'OR 1=1--}
+  4  {root' --}
+  5  {' or ''='}
+}
+foreach {host sql} $mt15_hosts {
+  set mt15_base [mt_m_skeleton $sql {alice}]
+  foreach {tn payload} $mt15_corpus {
+    do_test 15.2.$host.$tn { mt_m_skeleton $sql $payload } $mt15_base
+  }
+}
+
+# 15.3: the value survives the round trip whatever it held
+foreach {tn payload} [concat $mt15_unbalanced $mt15_corpus] {
+  do_test 15.3.$tn {
+    execsql [sqlite3_matchertext_printf {SELECT %m} $payload]
+  } [list $payload]
+}
+
+# 15.4: the same payloads against a quoted slot built by concatenation, which
+# is what the corpus was written to attack.  These must NOT be inert: a suite
+# where nothing breaks out is not evidence of containment, only of a test that
+# cannot see one.  15.4.1 counts 2 of 2 rows, so the WHERE clause was defeated.
+do_test 15.4.1 {
+  execsql "SELECT count(*) FROM t15 WHERE name = '[set p {' or ''='}]'"
+} {2}
+do_test 15.4.2 {
+  execsql "SELECT count(*) FROM t15 WHERE name = '[set p {' OR 1=1 --}]'"
+} {2}
+# and the matchertext form of the same statement selects nothing
+do_test 15.4.3 {
+  execsql [sqlite3_matchertext_printf \
+      {SELECT count(*) FROM t15 WHERE name = %m} {' or ''='}]
+} {0}
+
+# 15.5: premise A2, that the value must go through the hole rather than into
+# it.  A caller that builds M'(' and ')' itself and concatenates is outside the
+# discipline, and the value escapes exactly as it would from a quote.  Recorded
+# here so the cost of hand-building a hole stays visible.
+do_test 15.5.1 {
+  execsql "SELECT count(*) FROM t15 WHERE name = M'([set p {)' OR 1=1 --}])'"
+} {2}
+# %m closes it, because the encoder escapes the unmatched closer
+do_test 15.5.2 {
+  execsql [sqlite3_matchertext_printf \
+      {SELECT count(*) FROM t15 WHERE name = %m} {)' OR 1=1 --}]
+} {0}
+# and %M refuses it outright rather than rewriting it
+do_test 15.5.3 {
+  sqlite3_matchertext_printf {WHERE name = M'(%M)'} {)' OR 1=1 --}
+} {rejected}
+
+# 15.6: the name hole, where a bound parameter cannot go.  Encoding is the
+# caller's job here, since no % conversion writes a bracketed name.
+do_execsql_test 15.6.0 {
+  CREATE TABLE t15b([id] INTEGER, [odd name] TEXT);
+  INSERT INTO t15b VALUES(1,'x');
+}
+# A hand-built name hole lets the value out: the statement was written to read
+# t15b and reads the schema instead.
+do_test 15.6.1 {
+  set p {name] FROM sqlite_schema --[}
+  expr {[lsearch [execsql "SELECT \[$p\] FROM t15b"] t15b]>=0}
+} {1}
+# Encoded, the whole value is one name. Naming no column is an error, and the
+# error repeats the value back in full, which is what says no part of it was
+# read as syntax.
+do_test 15.6.2 {
+  set enc [sqlite3_matchertext_encode {name] FROM sqlite_schema --[}]
+  catchsql "SELECT \[$enc\] FROM t15b"
+} {1 {no such column: name] FROM sqlite_schema --[}}
+do_test 15.6.3 {
+  set enc [sqlite3_matchertext_encode {odd name}]
+  execsql "SELECT \[$enc\] FROM t15b"
+} {x}
 
 finish_test

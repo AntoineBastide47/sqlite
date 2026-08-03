@@ -837,6 +837,22 @@ static int sqlite3Prepare(
     sParse.rc = SQLITE_NOMEM_BKPT;
     sParse.checkSchema = 0;
   }
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  /* Strict mode is learned at schema load, which for a cold connection
+  ** happens only once the parse above has run, so the text is checked again
+  ** here.  zTail bounds this statement, leaving any that follow alone. */
+  if( (sParse.rc==SQLITE_OK || sParse.rc==SQLITE_DONE)
+   && (db->flags & SQLITE_MatchertextOnly)!=0
+   && db->init.busy==0
+   && (db->mDbFlags & DBFLAG_PreferBuiltin)==0
+   && sParse.zTail>zSql
+   && !sqlite3MatchertextVerify((const unsigned char*)zSql,
+                                (i64)(sParse.zTail-zSql))
+  ){
+    sqlite3ErrorMsg(&sParse,
+        "SQL is not matchertext: a matcher outside a hole is unmatched");
+  }
+#endif
   if( sParse.rc!=SQLITE_OK && sParse.rc!=SQLITE_DONE ){
     if( sParse.checkSchema && db->init.busy==0 ){
       schemaIsValid(&sParse);
