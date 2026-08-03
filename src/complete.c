@@ -235,6 +235,18 @@ sqlite3_int64 sqlite3_incomplete(const char *zSql){
         break;
       }
       case '[': {   /* Microsoft-style identifiers in [...] */
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+        /* End the name by matcher balance, as the tokenizer does, so that a
+        ** nested bracket does not end it early.  An interior that does not
+        ** balance is left to the legacy scan below, which either finds the
+        ** ']' the parser will reject or runs out and reports incomplete. */
+        i64 nName = sqlite3MatchertextEnd((const unsigned char*)zSql);
+        if( nName>0 ){
+          zSql += nName-1;
+          token = tkOTHER;
+          break;
+        }
+#endif
         zSql++;
         while( *zSql && *zSql!=']' ){ zSql++; }
         if( *zSql==0 ){
@@ -270,6 +282,19 @@ sqlite3_int64 sqlite3_incomplete(const char *zSql){
       default: {
 #ifdef SQLITE_EBCDIC
         unsigned char c;
+#endif
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+        /* A matchertext literal is one token, so the quotes and semicolons
+        ** its value may carry do not end the statement. An ill-formed one
+        ** falls through and lexes as the identifier M, as in the tokenizer. */
+        if( (zSql[0]|0x20)=='m' && zSql[1]=='\'' ){
+          i64 nVal = sqlite3MatchertextEnd((const unsigned char*)(zSql+2));
+          if( nVal>0 && zSql[2+nVal]=='\'' ){
+            zSql += nVal+2;
+            token = tkOTHER;
+            break;
+          }
+        }
 #endif
         if( IdChar((u8)*zSql) ){
           /* Keywords and unquoted identifiers */

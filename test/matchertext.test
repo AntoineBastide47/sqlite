@@ -1127,4 +1127,80 @@ do_test 13.6.1 {
   execsql {SELECT 'raw'}
 } {raw}
 
+#-------------------------------------------------------------------------
+# 14.*: sqlite3_complete().
+#
+# The shell decides where one statement ends with its own scanner, separate
+# from the tokenizer.  It has to end both holes the same way, or a value
+# carrying a semicolon would split a statement that the parser reads whole.
+
+ifcapable !complete {
+  finish_test
+  return
+}
+
+# 14.1: a matchertext literal is one token, so what it carries does not end
+# the statement.  Each of these is a single complete statement.
+foreach {tn sql} {
+  1  {SELECT M'(;)';}
+  2  {SELECT M'(it's)';}
+  3  {SELECT M'(a;b)' , M'(c;d)';}
+  4  {SELECT M'(--)';}
+  5  {SELECT M'(/* x */)';}
+  6  {SELECT M'((a;b))';}
+  7  {SELECT m'(;)';}
+} {
+  do_test 14.1.$tn { db complete $sql } {1}
+}
+
+# 14.2: and the same text without the trailing semicolon is not complete
+foreach {tn sql} {
+  1  {SELECT M'(;)'}
+  2  {SELECT M'(it's)'}
+} {
+  do_test 14.2.$tn { db complete $sql } {0}
+}
+
+# 14.3: an unterminated literal leaves the statement open, whatever it
+# carries.  The shell keeps reading rather than sending a broken statement.
+foreach {tn sql} {
+  1  {SELECT M'(}
+  2  {SELECT M'(a;}
+  3  {SELECT M'(a;)}
+  4  {SELECT M'(unbalanced ; }
+} {
+  do_test 14.3.$tn { db complete $sql } {0}
+}
+
+# 14.4: the name hole ends by balance too, so a nested bracket does not end
+# the name early and a semicolon inside one is not a separator
+do_test 14.4.1 { db complete {SELECT * FROM [a[b]c];} } {1}
+do_test 14.4.2 { db complete {SELECT * FROM [a;b];} } {1}
+do_test 14.4.3 { db complete {SELECT * FROM [a[b]c]} } {0}
+do_test 14.4.4 { db complete {SELECT * FROM [a[b} } {0}
+# The sharpest case: ending the name at the first ']' would leave the ';'
+# outside it and split the statement in the middle of a name.
+do_test 14.4.5 { db complete {SELECT * FROM [a[b]c;d]} } {0}
+do_test 14.4.6 { db complete {SELECT * FROM [a[b]c;d];} } {1}
+
+# 14.5: an ill-formed literal is not a literal.  M lexes as an identifier
+# and the quote that follows opens an ordinary string, which is exactly what
+# the tokenizer does with the same text.
+do_test 14.5.1 { db complete {SELECT M'abc';} } {1}
+do_test 14.5.2 { db complete {SELECT M 'abc';} } {1}
+do_test 14.5.3 { db complete {SELECT M'(a]b)';} } {1}
+
+# 14.6: text that has always parsed is unaffected
+foreach {tn sql res} {
+  1  {SELECT 1;}              1
+  2  {SELECT 'a;b';}          1
+  3  {SELECT 1}               0
+  4  {SELECT "a;b";}          1
+  5  {SELECT [ident];}        1
+  6  {CREATE TABLE t(x);}     1
+  7  {SELECT '}               0
+} {
+  do_test 14.6.$tn { db complete $sql } $res
+}
+
 finish_test
