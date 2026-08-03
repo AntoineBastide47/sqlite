@@ -31,6 +31,16 @@
 */
 static const char zMagicHeader[] = SQLITE_FILE_HEADER;
 
+#if defined(SQLITE_ENABLE_MATCHERTEXT) \
+ && (defined(SQLITE_TEST) || defined(SQLITE_MATCHERTEXT_TEST_BYPASS))
+/* Keep stock database fixtures usable under the test-only bypass. */
+static const char *btreeFileHeader(void){
+  return sqlite3MatchertextEnabled() ? zMagicHeader : "SQLite format 3";
+}
+#else
+# define btreeFileHeader() zMagicHeader
+#endif
+
 /*
 ** Set this global variable to 1 to enable tracing using the TRACE
 ** macro.
@@ -3338,10 +3348,8 @@ static int lockBtree(BtShared *pBt){
     u32 usableSize;
     u8 *page1 = pPage1->aData;
     rc = SQLITE_NOTADB;
-    /* EVIDENCE-OF: R-43737-39999 Every valid SQLite database file begins
-    ** with the following 16 bytes (in hex): 53 51 4c 69 74 65 20 66 6f 72 6d
-    ** 61 74 20 33 00. */
-    if( memcmp(page1, zMagicHeader, 16)!=0 ){
+    /* The first 16 bytes must match this build's file signature. */
+    if( memcmp(page1, btreeFileHeader(), 16)!=0 ){
       goto page1_init_failed;
     }
 
@@ -3551,7 +3559,7 @@ static int newDatabase(BtShared *pBt){
   data = pP1->aData;
   rc = sqlite3PagerWrite(pP1->pDbPage);
   if( rc ) return rc;
-  memcpy(data, zMagicHeader, sizeof(zMagicHeader));
+  memcpy(data, btreeFileHeader(), sizeof(zMagicHeader));
   assert( sizeof(zMagicHeader)==16 );
   data[16] = (u8)((pBt->pageSize>>8)&0xff);
   data[17] = (u8)((pBt->pageSize>>16)&0xff);

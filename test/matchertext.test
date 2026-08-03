@@ -940,6 +940,38 @@ forcedelete test11.db
 sqlite3_matchertext_test_bypass 0
 sqlite3 db test11.db
 
+# Matchertext and standard SQLite files have different signatures. Each mode
+# rejects files from the other mode before it reads the schema.
+do_test 11.0.1 {
+  sqlite3_matchertext_exec db {CREATE TABLE signature_test(x)}
+  hexio_read test11.db 0 16
+} {4D617463686572746578742064623100}
+do_test 11.0.2 {
+  db close
+  sqlite3_matchertext_test_bypass 1
+  sqlite3 db test11.db
+  set res [catchsql {SELECT * FROM signature_test}]
+  db close
+  sqlite3_matchertext_test_bypass 0
+  sqlite3 db test11.db
+  set res
+} {1 {file is not a database}}
+do_test 11.0.3 {
+  forcedelete standard11.db
+  sqlite3_matchertext_test_bypass 1
+  sqlite3 standard standard11.db
+  standard eval {CREATE TABLE t(x)}
+  standard close
+  sqlite3_matchertext_test_bypass 0
+  sqlite3 standard standard11.db
+  set res [catch {
+    sqlite3_matchertext_exec standard {SELECT * FROM t}
+  } msg]
+  standard close
+  forcedelete standard11.db
+  list $res $msg
+} {1 {file is not a database}}
+
 do_test 11.1.1 {
   sqlite3_matchertext_exec db {CREATE TABLE ?I(name TEXT)} I users
 } {}
