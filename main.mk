@@ -2542,8 +2542,11 @@ show-variables:
 
 matchertext: clean
 	@LDFLAGS="-L/opt/homebrew/lib" ./configure --dev --with-tcl=/opt/homebrew/lib
-	@$(MAKE) tclextension-install OPTS="-DSQLITE_ENABLE_MATCHERTEXT"
-	@LDFLAGS="-L/opt/homebrew/lib" $(MAKE) devtest OPTS="-DSQLITE_ENABLE_MATCHERTEXT"
+	@$(MAKE) testfixture srctree-check sourcetest \
+		OPTS="-DSQLITE_ENABLE_MATCHERTEXT -DSQLITE_MATCHERTEXT_TEST_BYPASS"
+	@LDFLAGS="-L/opt/homebrew/lib" \
+		OPTS="-DSQLITE_ENABLE_MATCHERTEXT -DSQLITE_MATCHERTEXT_TEST_BYPASS" \
+		./testfixture $(TOP)/test/testrunner.tcl mdevtest
 
 no-matchertext: clean
 	@LDFLAGS="-L/opt/homebrew/lib" ./configure --dev --with-tcl=/opt/homebrew/lib

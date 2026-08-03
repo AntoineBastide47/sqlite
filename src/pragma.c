@@ -2364,63 +2364,6 @@ void sqlite3Pragma(
   break;
 #endif /* SQLITE_OMIT_SCHEMA_VERSION_PRAGMAS */
 
-#ifdef SQLITE_ENABLE_MATCHERTEXT
-  /*
-  **   PRAGMA [schema.]matchertext
-  **   PRAGMA [schema.]matchertext = BOOLEAN
-  **
-  ** Read or write the strict matchertext mode in the database header.
-  ** Every connection inherits the header bit and cannot db_config it off.
-  ** The write bumps the schema version so live connections re-read it.
-  */
-  case PragTyp_MATCHERTEXT: {
-    sqlite3VdbeUsesBtree(v, iDb);
-    if( zRight ){
-      int mtOn = sqlite3GetBoolean(zRight, 0);
-      static const VdbeOpList setMt[] = {
-        { OP_Transaction,    0,  1,  0},    /* 0 */
-        { OP_SetCookie,      0,  BTREE_MATCHERTEXT,    0},  /* 1 */
-        { OP_SetCookie,      0,  BTREE_SCHEMA_VERSION, 0},  /* 2 */
-      };
-      VdbeOp *aOp;
-      sqlite3VdbeVerifyNoMallocRequired(v, ArraySize(setMt));
-      aOp = sqlite3VdbeAddOpList(v, ArraySize(setMt), setMt, 0);
-      if( ONLY_IF_REALLOC_STRESS(aOp==0) ) break;
-      aOp[0].p1 = iDb;
-      aOp[1].p1 = iDb;
-      aOp[1].p3 = mtOn;
-      aOp[1].p5 = 1;
-      aOp[2].p1 = iDb;
-      aOp[2].p3 = db->aDb[iDb].pSchema->schema_cookie + 1;
-      aOp[2].p5 = 1;
-      /* This connection switches now, not at its next schema reload */
-      if( iDb==0 ){
-        if( mtOn ){
-          db->flags |= SQLITE_MatchertextOnly;
-          DbSetProperty(db, 0, DB_Matchertext);
-        }else{
-          db->flags &= ~(u64)SQLITE_MatchertextOnly;
-          DbClearProperty(db, 0, DB_Matchertext);
-        }
-      }
-    }else{
-      static const VdbeOpList readMt[] = {
-        { OP_Transaction,     0,  0,  0},    /* 0 */
-        { OP_ReadCookie,      0,  1,  BTREE_MATCHERTEXT},   /* 1 */
-        { OP_ResultRow,       1,  1,  0}
-      };
-      VdbeOp *aOp;
-      sqlite3VdbeVerifyNoMallocRequired(v, ArraySize(readMt));
-      aOp = sqlite3VdbeAddOpList(v, ArraySize(readMt), readMt, 0);
-      if( ONLY_IF_REALLOC_STRESS(aOp==0) ) break;
-      aOp[0].p1 = iDb;
-      aOp[1].p1 = iDb;
-      sqlite3VdbeReusable(v);
-    }
-  }
-  break;
-#endif /* SQLITE_ENABLE_MATCHERTEXT */
-
 #ifndef SQLITE_OMIT_COMPILEOPTION_DIAGS
   /*
   **   PRAGMA compile_options

@@ -2720,8 +2720,7 @@ struct sqlite3_mem_methods {
 #define SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE   1021 /* int int* */
 #define SQLITE_DBCONFIG_ENABLE_COMMENTS       1022 /* int int* */
 #define SQLITE_DBCONFIG_FP_DIGITS             1023 /* int int* */
-#define SQLITE_DBCONFIG_MATCHERTEXT           1024 /* int int* */
-#define SQLITE_DBCONFIG_MAX                   1024 /* Largest DBCONFIG */
+#define SQLITE_DBCONFIG_MAX                   1023 /* Largest DBCONFIG */
 
 /*
 ** CAPI3REF: Enable Or Disable Extended Result Codes
@@ -3254,6 +3253,23 @@ char *sqlite3_snprintf(int,char*,const char*, ...);
 char *sqlite3_vsnprintf(int,char*,const char*, va_list);
 
 #ifdef SQLITE_ENABLE_MATCHERTEXT
+/*
+** CAPI3REF: Matchertext Preparation
+**
+** Matchertext builds accept external SQL through
+** sqlite3_matchertext_prepare_v3().  The template uses ?V for text values
+** and ?I for identifiers.  Each placeholder consumes one argument.  Values
+** become bound parameters.  Identifiers are delimited by SQLite after they
+** pass matchertext verification.
+*/
+#define SQLITE_MATCHERTEXT_VALUE       1
+#define SQLITE_MATCHERTEXT_IDENTIFIER  2
+typedef struct sqlite3_matchertext_arg sqlite3_matchertext_arg;
+struct sqlite3_matchertext_arg {
+  int type;
+  const void *data;
+  sqlite3_uint64 size;
+};
 /*
 ** CAPI3REF: Matchertext Encoding
 **
@@ -4350,6 +4366,17 @@ int sqlite3_set_errmsg(sqlite3 *db, int errcode, const char *zErrMsg);
 ** </ol>
 */
 typedef struct sqlite3_stmt sqlite3_stmt;
+
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+int sqlite3_matchertext_prepare_v3(
+  sqlite3*, const char*, int, unsigned int,
+  const sqlite3_matchertext_arg*, int, sqlite3_stmt**
+);
+int sqlite3_matchertext_exec(
+  sqlite3*, const char*, int, const sqlite3_matchertext_arg*, int,
+  sqlite3_callback, void*, char**
+);
+#endif
 
 /*
 ** CAPI3REF: Run-time Limits

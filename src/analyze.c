@@ -1944,11 +1944,13 @@ int sqlite3AnalysisLoad(sqlite3 *db, int iDb){
   HashElem *i;
   char *zSql;
   int rc = SQLITE_OK;
+  u32 savedDbFlags = db->mDbFlags;
   Schema *pSchema = db->aDb[iDb].pSchema;
   const Table *pStat1;
 
   assert( iDb>=0 && iDb<db->nDb );
   assert( db->aDb[iDb].pBt!=0 );
+  db->mDbFlags |= DBFLAG_PreferBuiltin;
 
   /* Clear any prior statistics */
   assert( sqlite3SchemaMutexHeld(db, iDb, 0) );
@@ -2005,6 +2007,7 @@ int sqlite3AnalysisLoad(sqlite3 *db, int iDb){
   if( rc==SQLITE_NOMEM ){
     sqlite3OomFault(db);
   }
+  db->mDbFlags = savedDbFlags;
   return rc;
 }
 

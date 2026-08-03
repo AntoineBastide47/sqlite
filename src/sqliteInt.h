@@ -1541,7 +1541,6 @@ struct Schema {
 #define DB_SchemaLoaded    0x0001  /* The schema has been loaded */
 #define DB_UnresetViews    0x0002  /* Some views have defined column names */
 #define DB_ResetWanted     0x0008  /* Reset the schema when nSchemaLock==0 */
-#define DB_Matchertext     0x0010  /* File header declares strict mode */
 
 /*
 ** The number of different kinds of things that can be limited
@@ -1879,7 +1878,6 @@ struct sqlite3 {
 #define SQLITE_AttachCreate   HI(0x00010) /* ATTACH allowed to create new dbs */
 #define SQLITE_AttachWrite    HI(0x00020) /* ATTACH allowed to open for write */
 #define SQLITE_Comments       HI(0x00040) /* Enable SQL comments */
-#define SQLITE_MatchertextOnly HI(0x00080) /* Refuse '...' from outside */
 
 /* Flags used only if debugging */
 #ifdef SQLITE_DEBUG
@@ -5981,8 +5979,19 @@ sqlite3_uint64 sqlite3Hwtime(void);
 #ifdef SQLITE_ENABLE_MATCHERTEXT
 i64 sqlite3MatchertextEnd(const unsigned char*);
 int sqlite3MatchertextVerify(const unsigned char*, i64);
+int sqlite3MatchertextVerifySql(const unsigned char*, i64);
 char *sqlite3MatchertextEncode(const char*, i64, i64*);
 i64 sqlite3MatchertextDecodeInPlace(char*, i64, int);
+int sqlite3MatchertextInternalAllowed(sqlite3*);
+int sqlite3MatchertextLegacyError(sqlite3*, const char*);
+#if defined(SQLITE_TEST) || defined(SQLITE_MATCHERTEXT_TEST_BYPASS)
+extern int sqlite3MatchertextTestBypass;
+# define sqlite3MatchertextEnabled() (!sqlite3MatchertextTestBypass)
+#else
+# define sqlite3MatchertextEnabled() 1
+#endif
+#define sqlite3MatchertextLegacyAllowed(D) \
+  (!sqlite3MatchertextEnabled() || sqlite3MatchertextInternalAllowed(D))
 #endif
 
 #endif /* SQLITEINT_H */

@@ -1016,9 +1016,6 @@ int sqlite3_db_config(sqlite3 *db, int op, ...){
         { SQLITE_DBCONFIG_LEGACY_ALTER_TABLE,    SQLITE_LegacyAlter    },
         { SQLITE_DBCONFIG_DQS_DDL,               SQLITE_DqsDDL         },
         { SQLITE_DBCONFIG_DQS_DML,               SQLITE_DqsDML         },
-#ifdef SQLITE_ENABLE_MATCHERTEXT
-        { SQLITE_DBCONFIG_MATCHERTEXT,           SQLITE_MatchertextOnly },
-#endif
         { SQLITE_DBCONFIG_LEGACY_FILE_FORMAT,    SQLITE_LegacyFileFmt  },
         { SQLITE_DBCONFIG_TRUSTED_SCHEMA,        SQLITE_TrustedSchema  },
         { SQLITE_DBCONFIG_STMT_SCANSTATUS,       SQLITE_StmtScanStatus },
@@ -1039,14 +1036,6 @@ int sqlite3_db_config(sqlite3 *db, int op, ...){
           }else if( onoff==0 ){
             db->flags &= ~(u64)aFlagOp[i].mask;
           }
-#ifdef SQLITE_ENABLE_MATCHERTEXT
-          if( aFlagOp[i].mask==SQLITE_MatchertextOnly
-           && db->aDb[0].pSchema!=0
-           && (db->aDb[0].pSchema->schemaFlags & DB_Matchertext)!=0
-          ){
-            db->flags |= SQLITE_MatchertextOnly;
-          }
-#endif
           if( oldFlags!=db->flags ){
             sqlite3ExpirePreparedStatements(db, 0);
           }

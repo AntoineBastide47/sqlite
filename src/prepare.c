@@ -216,9 +216,6 @@ int sqlite3InitOne(sqlite3 *db, int iDb, char **pzErrMsg, u32 mFlags){
   Db *pDb;
   char const *azArg[6];
   int meta[5];
-#ifdef SQLITE_ENABLE_MATCHERTEXT
-  u32 mtMeta = 0;
-#endif
   InitData initData;
   const char *zSchemaTabName;
   int openedTransaction = 0;
@@ -311,13 +308,6 @@ int sqlite3InitOne(sqlite3 *db, int iDb, char **pzErrMsg, u32 mFlags){
     memset(meta, 0, sizeof(meta));
   }
   pDb->pSchema->schema_cookie = meta[BTREE_SCHEMA_VERSION-1];
-#ifdef SQLITE_ENABLE_MATCHERTEXT
-  /* Read here while the transaction is open; applied only if the load
-  ** succeeds, so a corrupt header cannot switch strict mode on */
-  if( iDb==0 && (db->flags & SQLITE_ResetDatabase)==0 ){
-    sqlite3BtreeGetMeta(pDb->pBt, BTREE_MATCHERTEXT, &mtMeta);
-  }
-#endif
 
   /* If opening a non-empty database, check the text encoding. For the
   ** main database, set sqlite3.enc to the encoding of the main database.
@@ -430,17 +420,6 @@ int sqlite3InitOne(sqlite3 *db, int iDb, char **pzErrMsg, u32 mFlags){
     */
     DbSetProperty(db, iDb, DB_SchemaLoaded);
     rc = SQLITE_OK;
-#ifdef SQLITE_ENABLE_MATCHERTEXT
-    /* The header, not the connection, is the authority on strict mode */
-    if( iDb==0 ){
-      if( mtMeta==1 ){
-        db->flags |= SQLITE_MatchertextOnly;
-        pDb->pSchema->schemaFlags |= DB_Matchertext;
-      }else{
-        pDb->pSchema->schemaFlags &= ~DB_Matchertext;
-      }
-    }
-#endif
   }
 
   /* Jump here for an error that occurs after successfully allocating
@@ -837,22 +816,6 @@ static int sqlite3Prepare(
     sParse.rc = SQLITE_NOMEM_BKPT;
     sParse.checkSchema = 0;
   }
-#ifdef SQLITE_ENABLE_MATCHERTEXT
-  /* Strict mode is learned at schema load, which for a cold connection
-  ** happens only once the parse above has run, so the text is checked again
-  ** here.  zTail bounds this statement, leaving any that follow alone. */
-  if( (sParse.rc==SQLITE_OK || sParse.rc==SQLITE_DONE)
-   && (db->flags & SQLITE_MatchertextOnly)!=0
-   && db->init.busy==0
-   && (db->mDbFlags & DBFLAG_PreferBuiltin)==0
-   && sParse.zTail>zSql
-   && !sqlite3MatchertextVerify((const unsigned char*)zSql,
-                                (i64)(sParse.zTail-zSql))
-  ){
-    sqlite3ErrorMsg(&sParse,
-        "SQL is not matchertext: a matcher outside a hole is unmatched");
-  }
-#endif
   if( sParse.rc!=SQLITE_OK && sParse.rc!=SQLITE_DONE ){
     if( sParse.checkSchema && db->init.busy==0 ){
       schemaIsValid(&sParse);
@@ -968,6 +931,194 @@ int sqlite3Reprepare(Vdbe *p){
   return SQLITE_OK;
 }
 
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+/* Prepare one checked template and bind its ?V arguments. */
+int sqlite3_matchertext_prepare_v3(
+  sqlite3 *db,
+  const char *zTemplate,
+  int nTemplate,
+  unsigned int prepFlags,
+  const sqlite3_matchertext_arg *aArg,
+  int nArg,
+  sqlite3_stmt **ppStmt
+){
+  sqlite3_str *pOut = 0;
+  char *zCopy = 0;
+  char *zSql = 0;
+  const char *zTail = 0;
+  int i = 0;
+  int iArg = 0;
+  int iBind = 0;
+  int rc = SQLITE_OK;
+
+  if( ppStmt==0 ) return SQLITE_MISUSE_BKPT;
+  *ppStmt = 0;
+  if( !sqlite3SafetyCheckOk(db) || zTemplate==0 || nArg<0
+   || (nArg>0 && aArg==0)
+  ){
+    return SQLITE_MISUSE_BKPT;
+  }
+  if( nTemplate<0 ) nTemplate = sqlite3Strlen30(zTemplate);
+  if( memchr(zTemplate, 0, (size_t)nTemplate)!=0 ){
+    return sqlite3MatchertextLegacyError(db,
+        "sqlite3_matchertext_prepare_v3() with a NUL-free template");
+  }
+
+  sqlite3_mutex_enter(db->mutex);
+  zCopy = sqlite3DbStrNDup(db, zTemplate, nTemplate);
+  if( zCopy==0 ){
+    rc = SQLITE_NOMEM_BKPT;
+    goto matchertext_prepare_out;
+  }
+  if( !sqlite3MatchertextVerifySql((const unsigned char*)zCopy, nTemplate) ){
+    sqlite3ErrorWithMsg(db, SQLITE_ERROR,
+        "matchertext template is not valid matchertext");
+    rc = SQLITE_ERROR;
+    goto matchertext_prepare_out;
+  }
+
+  pOut = sqlite3_str_new(db);
+  while( i<nTemplate ){
+    int tokenType;
+    int nToken = sqlite3GetToken((u8*)zCopy+i, &tokenType);
+    int eType = 0;
+    if( tokenType==TK_VARIABLE && nToken==1 && zCopy[i]=='?'
+     && i+1<nTemplate && (zCopy[i+1]=='V' || zCopy[i+1]=='I')
+     && (i+2==nTemplate || !sqlite3IsIdChar((u8)zCopy[i+2]))
+    ){
+      eType = zCopy[i+1]=='V' ? SQLITE_MATCHERTEXT_VALUE
+                              : SQLITE_MATCHERTEXT_IDENTIFIER;
+    }else if( tokenType==TK_VARIABLE ){
+      sqlite3ErrorWithMsg(db, SQLITE_ERROR,
+          "matchertext templates require ?V or ?I parameters");
+      rc = SQLITE_ERROR;
+      goto matchertext_prepare_out;
+    }
+    if( eType ){
+      const sqlite3_matchertext_arg *pArg;
+      if( iArg>=nArg ){
+        sqlite3ErrorWithMsg(db, SQLITE_RANGE,
+            "matchertext template has more placeholders than arguments");
+        rc = SQLITE_RANGE;
+        goto matchertext_prepare_out;
+      }
+      pArg = &aArg[iArg++];
+      if( pArg->type!=eType ){
+        sqlite3ErrorWithMsg(db, SQLITE_MISMATCH,
+            "matchertext argument %d does not match ?%c",
+            iArg, eType==SQLITE_MATCHERTEXT_VALUE ? 'V' : 'I');
+        rc = SQLITE_MISMATCH;
+        goto matchertext_prepare_out;
+      }
+      if( pArg->data==0 && pArg->size!=0 ){
+        sqlite3ErrorWithMsg(db, SQLITE_MISUSE,
+            "matchertext argument %d has no data", iArg);
+        rc = SQLITE_MISUSE;
+        goto matchertext_prepare_out;
+      }
+      if( pArg->size>0x7fffffff
+       || !sqlite3MatchertextVerify((const unsigned char*)pArg->data,
+                                    (i64)pArg->size)
+      ){
+        sqlite3ErrorWithMsg(db, SQLITE_ERROR,
+            "matchertext argument %d is not valid matchertext", iArg);
+        rc = SQLITE_ERROR;
+        goto matchertext_prepare_out;
+      }
+      if( eType==SQLITE_MATCHERTEXT_VALUE ){
+        sqlite3_str_appendchar(pOut, 1, '?');
+      }else{
+        if( pArg->data==0
+         || memchr(pArg->data, 0, (size_t)pArg->size)!=0
+        ){
+          sqlite3ErrorWithMsg(db, SQLITE_ERROR,
+              "matchertext identifier %d must be non-NULL and NUL-free",
+              iArg);
+          rc = SQLITE_ERROR;
+          goto matchertext_prepare_out;
+        }
+        sqlite3_str_appendchar(pOut, 1, '[');
+        sqlite3_str_append(pOut, (const char*)pArg->data, (int)pArg->size);
+        sqlite3_str_appendchar(pOut, 1, ']');
+      }
+      i += 2;
+    }else{
+      if( nToken<=0 || nToken>nTemplate-i ){
+        sqlite3ErrorWithMsg(db, SQLITE_ERROR,
+            "matchertext template contains an invalid token");
+        rc = SQLITE_ERROR;
+        goto matchertext_prepare_out;
+      }
+      sqlite3_str_append(pOut, zCopy+i, nToken);
+      i += nToken;
+    }
+  }
+  if( iArg!=nArg ){
+    sqlite3ErrorWithMsg(db, SQLITE_RANGE,
+        "matchertext template has fewer placeholders than arguments");
+    rc = SQLITE_RANGE;
+    goto matchertext_prepare_out;
+  }
+  rc = sqlite3_str_errcode(pOut);
+  zSql = sqlite3_str_finish(pOut);
+  pOut = 0;
+  if( rc!=SQLITE_OK || zSql==0 ){
+    if( rc==SQLITE_OK ) rc = SQLITE_NOMEM_BKPT;
+    sqlite3Error(db, rc);
+    goto matchertext_prepare_out;
+  }
+  if( !sqlite3MatchertextVerifySql((const unsigned char*)zSql,
+                                    (i64)strlen(zSql)) ){
+    sqlite3ErrorWithMsg(db, SQLITE_ERROR,
+        "composed SQL is not valid matchertext");
+    rc = SQLITE_ERROR;
+    goto matchertext_prepare_out;
+  }
+
+  rc = sqlite3LockAndPrepare(db, zSql, -1,
+      SQLITE_PREPARE_SAVESQL|(prepFlags&SQLITE_PREPARE_MASK),
+      0, ppStmt, &zTail);
+  if( rc!=SQLITE_OK ) goto matchertext_prepare_out;
+  while( zTail[0] ){
+    int tokenType;
+    int nToken = sqlite3GetToken((const u8*)zTail, &tokenType);
+    if( tokenType!=TK_SPACE && tokenType!=TK_COMMENT && tokenType!=TK_SEMI ){
+      sqlite3_finalize(*ppStmt);
+      *ppStmt = 0;
+      sqlite3ErrorWithMsg(db, SQLITE_ERROR,
+          "matchertext templates must contain one SQL statement");
+      rc = SQLITE_ERROR;
+      goto matchertext_prepare_out;
+    }
+    zTail += nToken;
+  }
+  for(i=0; i<nArg; i++){
+    if( aArg[i].type==SQLITE_MATCHERTEXT_VALUE ){
+      iBind++;
+      if( aArg[i].data==0 ){
+        rc = sqlite3_bind_null(*ppStmt, iBind);
+      }else{
+        rc = sqlite3_bind_text64(*ppStmt, iBind, aArg[i].data, aArg[i].size,
+                                 SQLITE_TRANSIENT, SQLITE_UTF8);
+      }
+      if( rc!=SQLITE_OK ){
+        sqlite3_finalize(*ppStmt);
+        *ppStmt = 0;
+        goto matchertext_prepare_out;
+      }
+    }
+  }
+
+matchertext_prepare_out:
+  if( pOut ) sqlite3_free(sqlite3_str_finish(pOut));
+  sqlite3DbFree(db, zCopy);
+  sqlite3_free(zSql);
+  rc = sqlite3ApiExit(db, rc);
+  sqlite3_mutex_leave(db->mutex);
+  return rc;
+}
+#endif
+
 
 /*
 ** Two versions of the official API.  Legacy and new use.  In the legacy
@@ -985,6 +1136,13 @@ int sqlite3_prepare(
   const char **pzTail       /* OUT: End of parsed string */
 ){
   int rc;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  if( sqlite3SafetyCheckOk(db) && !sqlite3MatchertextLegacyAllowed(db) ){
+    if( ppStmt ) *ppStmt = 0;
+    return sqlite3MatchertextLegacyError(db,
+        "sqlite3_matchertext_prepare_v3()");
+  }
+#endif
   rc = sqlite3LockAndPrepare(db,zSql,nBytes,0,0,ppStmt,pzTail);
   assert( rc==SQLITE_OK || ppStmt==0 || *ppStmt==0 );  /* VERIFY: F13021 */
   return rc;
@@ -997,6 +1155,13 @@ int sqlite3_prepare_v2(
   const char **pzTail       /* OUT: End of parsed string */
 ){
   int rc;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  if( sqlite3SafetyCheckOk(db) && !sqlite3MatchertextLegacyAllowed(db) ){
+    if( ppStmt ) *ppStmt = 0;
+    return sqlite3MatchertextLegacyError(db,
+        "sqlite3_matchertext_prepare_v3()");
+  }
+#endif
   /* EVIDENCE-OF: R-37923-12173 The sqlite3_prepare_v2() interface works
   ** exactly the same as sqlite3_prepare_v3() with a zero prepFlags
   ** parameter.
@@ -1016,6 +1181,13 @@ int sqlite3_prepare_v3(
   const char **pzTail       /* OUT: End of parsed string */
 ){
   int rc;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  if( sqlite3SafetyCheckOk(db) && !sqlite3MatchertextLegacyAllowed(db) ){
+    if( ppStmt ) *ppStmt = 0;
+    return sqlite3MatchertextLegacyError(db,
+        "sqlite3_matchertext_prepare_v3()");
+  }
+#endif
   /* EVIDENCE-OF: R-56861-42673 sqlite3_prepare_v3() differs from
   ** sqlite3_prepare_v2() only in having the extra prepFlags parameter,
   ** which is a bit array consisting of zero or more of the
@@ -1113,6 +1285,13 @@ int sqlite3_prepare16(
   const void **pzTail       /* OUT: End of parsed string */
 ){
   int rc;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  if( sqlite3SafetyCheckOk(db) && !sqlite3MatchertextLegacyAllowed(db) ){
+    if( ppStmt ) *ppStmt = 0;
+    return sqlite3MatchertextLegacyError(db,
+        "sqlite3_matchertext_prepare_v3() with UTF-8 input");
+  }
+#endif
   rc = sqlite3Prepare16(db,zSql,nBytes&~1,0,ppStmt,pzTail);
   assert( rc==SQLITE_OK || ppStmt==0 || *ppStmt==0 );  /* VERIFY: F13021 */
   return rc;
@@ -1125,6 +1304,13 @@ int sqlite3_prepare16_v2(
   const void **pzTail       /* OUT: End of parsed string */
 ){
   int rc;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  if( sqlite3SafetyCheckOk(db) && !sqlite3MatchertextLegacyAllowed(db) ){
+    if( ppStmt ) *ppStmt = 0;
+    return sqlite3MatchertextLegacyError(db,
+        "sqlite3_matchertext_prepare_v3() with UTF-8 input");
+  }
+#endif
   rc = sqlite3Prepare16(db,zSql,nBytes&~1,SQLITE_PREPARE_SAVESQL,ppStmt,pzTail);
   assert( rc==SQLITE_OK || ppStmt==0 || *ppStmt==0 );  /* VERIFY: F13021 */
   return rc;
@@ -1138,6 +1324,13 @@ int sqlite3_prepare16_v3(
   const void **pzTail       /* OUT: End of parsed string */
 ){
   int rc;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  if( sqlite3SafetyCheckOk(db) && !sqlite3MatchertextLegacyAllowed(db) ){
+    if( ppStmt ) *ppStmt = 0;
+    return sqlite3MatchertextLegacyError(db,
+        "sqlite3_matchertext_prepare_v3() with UTF-8 input");
+  }
+#endif
   rc = sqlite3Prepare16(db,zSql,nBytes&~1,
          SQLITE_PREPARE_SAVESQL|(prepFlags&SQLITE_PREPARE_MASK),
          ppStmt,pzTail);

@@ -41,6 +41,13 @@ int sqlite3_exec(
   int callbackIsInit;         /* True if callback data is initialized */
 
   if( !sqlite3SafetyCheckOk(db) ) return SQLITE_MISUSE_BKPT;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  if( !sqlite3MatchertextLegacyAllowed(db) ){
+    rc = sqlite3MatchertextLegacyError(db, "sqlite3_matchertext_exec()");
+    if( pzErrMsg ) *pzErrMsg = sqlite3_mprintf("%s", sqlite3_errmsg(db));
+    return rc;
+  }
+#endif
   if( zSql==0 ) zSql = "";
 
   sqlite3_mutex_enter(db->mutex);
@@ -139,3 +146,61 @@ exec_out:
   sqlite3_mutex_leave(db->mutex);
   return rc;
 }
+
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+/* Execute one checked matchertext template. */
+int sqlite3_matchertext_exec(
+  sqlite3 *db,
+  const char *zTemplate,
+  int nTemplate,
+  const sqlite3_matchertext_arg *aArg,
+  int nArg,
+  sqlite3_callback xCallback,
+  void *pArg,
+  char **pzErrMsg
+){
+  sqlite3_stmt *pStmt = 0;
+  char **az = 0;
+  int i;
+  int nCol = 0;
+  int rc;
+
+  if( pzErrMsg ) *pzErrMsg = 0;
+  rc = sqlite3_matchertext_prepare_v3(db, zTemplate, nTemplate, 0,
+                                      aArg, nArg, &pStmt);
+  if( rc!=SQLITE_OK ) goto matchertext_exec_out;
+  if( pStmt==0 ) goto matchertext_exec_out;
+  nCol = sqlite3_column_count(pStmt);
+  if( xCallback && nCol>0 ){
+    az = sqlite3_malloc64((sqlite3_uint64)(2*nCol+1)*sizeof(char*));
+    if( az==0 ){
+      rc = SQLITE_NOMEM_BKPT;
+      goto matchertext_exec_out;
+    }
+    for(i=0; i<nCol; i++) az[i] = (char*)sqlite3_column_name(pStmt, i);
+  }
+  while( (rc = sqlite3_step(pStmt))==SQLITE_ROW ){
+    if( xCallback ){
+      for(i=0; i<nCol; i++) az[nCol+i] = (char*)sqlite3_column_text(pStmt, i);
+      az[2*nCol] = 0;
+      if( xCallback(pArg, nCol, az+nCol, az) ){
+        rc = SQLITE_ABORT;
+        break;
+      }
+    }
+  }
+  if( rc==SQLITE_DONE ) rc = SQLITE_OK;
+
+matchertext_exec_out:
+  sqlite3_free(az);
+  if( pStmt ){
+    int rc2 = sqlite3_finalize(pStmt);
+    if( rc==SQLITE_OK ) rc = rc2;
+  }
+  if( rc!=SQLITE_OK && pzErrMsg ){
+    *pzErrMsg = sqlite3_mprintf("%s", sqlite3_errmsg(db));
+    if( *pzErrMsg==0 ) rc = SQLITE_NOMEM_BKPT;
+  }
+  return rc;
+}
+#endif

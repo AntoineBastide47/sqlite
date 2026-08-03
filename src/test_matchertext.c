@@ -28,6 +28,102 @@
 
 #ifdef SQLITE_ENABLE_MATCHERTEXT
 
+extern int getDbPointer(Tcl_Interp*, const char*, sqlite3**);
+
+/* Usage: sqlite3_matchertext_test_bypass BOOLEAN */
+static int SQLITE_TCLAPI test_matchertext_bypass(
+  void *clientData,
+  Tcl_Interp *interp,
+  int objc,
+  Tcl_Obj *CONST objv[]
+){
+  int b;
+  UNUSED_PARAMETER(clientData);
+  if( objc!=2 ){
+    Tcl_WrongNumArgs(interp, 1, objv, "BOOLEAN");
+    return TCL_ERROR;
+  }
+  if( Tcl_GetBooleanFromObj(interp, objv[1], &b) ) return TCL_ERROR;
+  sqlite3MatchertextTestBypass = b;
+  return TCL_OK;
+}
+
+static int test_matchertext_exec_cb(
+  void *pArg,
+  int nCol,
+  char **azValue,
+  char **azName
+){
+  Tcl_Obj *pList = (Tcl_Obj*)pArg;
+  int i;
+  UNUSED_PARAMETER(azName);
+  for(i=0; i<nCol; i++){
+    Tcl_ListObjAppendElement(0, pList,
+        azValue[i] ? Tcl_NewStringObj(azValue[i], -1) : Tcl_NewObj());
+  }
+  return 0;
+}
+
+/* Usage: sqlite3_matchertext_exec DB TEMPLATE ?V|I VALUE ...? */
+static int SQLITE_TCLAPI test_matchertext_exec(
+  void *clientData,
+  Tcl_Interp *interp,
+  int objc,
+  Tcl_Obj *CONST objv[]
+){
+  sqlite3_matchertext_arg *aArg = 0;
+  sqlite3 *db;
+  Tcl_Obj *pResult;
+  int i;
+  int nArg;
+  int rc;
+  char *zErr = 0;
+  UNUSED_PARAMETER(clientData);
+
+  if( objc<3 || (objc&1)==0 ){
+    Tcl_WrongNumArgs(interp, 1, objv, "DB TEMPLATE ?V|I VALUE ...?");
+    return TCL_ERROR;
+  }
+  if( getDbPointer(interp, Tcl_GetString(objv[1]), &db) ) return TCL_ERROR;
+  nArg = (objc-3)/2;
+  if( nArg ){
+    aArg = sqlite3_malloc64(sizeof(*aArg)*(sqlite3_uint64)nArg);
+    if( aArg==0 ){
+      Tcl_SetResult(interp, "out of memory", TCL_STATIC);
+      return TCL_ERROR;
+    }
+  }
+  for(i=0; i<nArg; i++){
+    Tcl_Size n;
+    const char *zType = Tcl_GetString(objv[3+2*i]);
+    aArg[i].data = Tcl_GetByteArrayFromObj(objv[4+2*i], &n);
+    aArg[i].size = (sqlite3_uint64)n;
+    if( strcmp(zType, "V")==0 ){
+      aArg[i].type = SQLITE_MATCHERTEXT_VALUE;
+    }else if( strcmp(zType, "I")==0 ){
+      aArg[i].type = SQLITE_MATCHERTEXT_IDENTIFIER;
+    }else{
+      sqlite3_free(aArg);
+      Tcl_SetResult(interp, "argument type must be V or I", TCL_STATIC);
+      return TCL_ERROR;
+    }
+  }
+  pResult = Tcl_NewListObj(0, 0);
+  Tcl_IncrRefCount(pResult);
+  rc = sqlite3_matchertext_exec(db, Tcl_GetString(objv[2]), -1,
+      aArg, nArg, test_matchertext_exec_cb, pResult, &zErr);
+  sqlite3_free(aArg);
+  if( rc==SQLITE_OK ){
+    Tcl_SetObjResult(interp, pResult);
+  }else{
+    Tcl_SetObjResult(interp,
+        Tcl_NewStringObj(zErr ? zErr : sqlite3_errmsg(db), -1));
+  }
+  Tcl_DecrRefCount(pResult);
+  sqlite3_free(zErr);
+  return rc==SQLITE_OK ? TCL_OK : TCL_ERROR;
+}
+
 /*
 ** Usage:  sqlite3_matchertext_verify VALUE
 **
@@ -189,6 +285,8 @@ int Sqlitetest_matchertext_Init(Tcl_Interp *interp){
     { "sqlite3_matchertext_printf", test_matchertext_printf, 0 },
     { "sqlite3_matchertext_encode", test_matchertext_recode, 0 },
     { "sqlite3_matchertext_decode", test_matchertext_recode, (void*)1 },
+    { "sqlite3_matchertext_exec",   test_matchertext_exec, 0 },
+    { "sqlite3_matchertext_test_bypass", test_matchertext_bypass, 0 },
   };
   int i;
   for(i=0; i<(int)(sizeof(aObjCmd)/sizeof(aObjCmd[0])); i++){

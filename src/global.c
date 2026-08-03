@@ -366,6 +366,12 @@ int sqlite3PendingByte = 0x40000000;
 u32 sqlite3TreeTrace = 0;
 u32 sqlite3WhereTrace = 0;
 
+#if defined(SQLITE_ENABLE_MATCHERTEXT) \
+ && (defined(SQLITE_TEST) || defined(SQLITE_MATCHERTEXT_TEST_BYPASS))
+/* Permit the stock test suite to exercise legacy APIs.  Not in production. */
+int sqlite3MatchertextTestBypass = 1;
+#endif
+
 #include "opcodes.h"
 /*
 ** Properties of opcodes.  The OPFLG_INITIALIZER macro is

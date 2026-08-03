@@ -928,347 +928,176 @@ do_test 10.12.4 {
 do_test 10.12.5 { sqlite3_matchertext_encode {} } {}
 
 #-------------------------------------------------------------------------
-# 11.*: SQLITE_DBCONFIG_MATCHERTEXT.
+# 11.*: Checked SQL entry and typed composition.
 #
-# The setting imposes two rules on SQL arriving from outside:
-#
-#   1. no quote-delimited literal, the hole that string concatenation fills;
-#   2. the text must itself be matchertext, checked whole and before any hole
-#      boundary is located.
-#
-# Rule 2 is what makes rule 1 worth having.  Without it an application can
-# still write the delimiters by hand and paste raw bytes between them, and a
-# payload beginning ")'" closes the hole and continues in host syntax.  Such
-# a payload leaves an unmatched matcher in the text, so rule 2 refuses it.
-#
-# What neither rule can reach is a payload that balances its own matchers,
-# because nothing distinguishes it from a template the application meant to
-# write; 11.8 records that boundary.  Premise A2 therefore still rests on the
-# application routing values through %m, %M or a bound parameter.
-#
-# SQL that SQLite generates for itself is exempt: it is written in the C
-# source, and it is what the schema writer emits through %Q.
-#
-# Off by default, so a connection behaves as SQLite always has until it asks
-# for the tighter rule.
+# A matchertext build has one mode. External SQL enters through
+# sqlite3_matchertext_prepare_v3() or sqlite3_matchertext_exec(). The template
+# uses ?V for a bound text value and ?I for a delimited identifier. Each input
+# is checked before composition.
 
-do_execsql_test 11.0 {
-  CREATE TABLE t11(n);
-  INSERT INTO t11 VALUES(M'(a)'), (M'(b)'), (M'(c)');
-  -- Written while the setting is off, so its body holds an ordinary literal.
-  -- Everything that re-parses this later has to keep accepting it.
-  CREATE VIEW v11 AS SELECT 'lit' AS x;
-}
+db close
+forcedelete test11.db
+sqlite3_matchertext_test_bypass 0
+sqlite3 db test11.db
 
-# 11.1: off by default, a literal works as always
-do_execsql_test 11.1.1 { SELECT count(*) FROM t11 WHERE n = 'a' } {1}
+do_test 11.1.1 {
+  sqlite3_matchertext_exec db {CREATE TABLE ?I(name TEXT)} I users
+} {}
+do_test 11.1.2 {
+  sqlite3_matchertext_exec db {INSERT INTO ?I VALUES(?V)} I users V alice
+} {}
+do_test 11.1.3 {
+  sqlite3_matchertext_exec db {INSERT INTO ?I VALUES(?V)} I users V bob
+} {}
+do_test 11.1.4 {
+  sqlite3_matchertext_exec db {SELECT name FROM ?I ORDER BY name} I users
+} {alice bob}
 
-# 11.2: rule 1.  With the setting on, a quoted literal from outside is
-# refused, so the hole that concatenation traditionally fills is unavailable
+# ?V is a bound value. SQL syntax in a valid value stays data.
 do_test 11.2.1 {
-  sqlite3_db_config db MATCHERTEXT 1
-  catchsql {SELECT count(*) FROM t11 WHERE n = 'a'}
-} {1 {quoted string literal 'a': use a matchertext literal M'(...)'}}
+  sqlite3_matchertext_exec db \
+      {SELECT count(*) FROM users WHERE name=?V} V {' OR '1'='1}
+} {0}
 do_test 11.2.2 {
-  catchsql {SELECT count(*) FROM t11 WHERE n = 'x' OR '1'='1'}
-} {1 {quoted string literal 'x': use a matchertext literal M'(...)'}}
+  sqlite3_matchertext_exec db {SELECT ?V} V {(safe [value])}
+} {{(safe [value])}}
 
-# 11.3: the matchertext form is how a value is written instead
-do_execsql_test 11.3.1 { SELECT count(*) FROM t11 WHERE n = M'(a)' } {1}
-do_execsql_test 11.3.2 { SELECT count(*) FROM t11 WHERE n = M'(x' OR '1'='1)' } {0}
+# Each input is checked before composition. Both value-hole breakouts and the
+# equivalent name-hole breakout fail before SQLite parses the composed SQL.
+foreach {tn template type value} {
+  value-unbalanced {SELECT count(*) FROM users WHERE name=?V} V \
+      {)' OR 1=1 --}
+  value-balanced-attack {SELECT count(*) FROM users WHERE name=?V} V \
+      {)' OR (1=1) AND name<>M'(}
+  name-breakout {SELECT count(*) FROM ?I} I \
+      {users] WHERE 1=1 OR name<>[}
+} {
+  do_test 11.3.$tn {
+    list [catch {
+      sqlite3_matchertext_exec db $template $type $value
+    } msg] $msg
+  } {1 {matchertext argument 1 is not valid matchertext}}
+}
 
-# 11.4: names too, since nm accepts the literal beside STRING
-do_execsql_test 11.4.1 { SELECT count(*) FROM M'(t11)' } {3}
-
-# 11.5: SQLite's own SQL still runs, which is what the exemption is for
-do_execsql_test 11.5.1 {
-  CREATE TABLE t11b(x);
-  CREATE INDEX i11 ON t11b(x);
-  DROP INDEX i11;
-  DROP TABLE t11b;
-  SELECT count(*) FROM t11;
-} {3}
-do_execsql_test 11.5.2 {
-  ALTER TABLE t11 RENAME TO t11c;
-  SELECT count(*) FROM M'(t11c)';
-} {3}
-
-# A view body written before the setting was turned on holds an ordinary
-# literal, and every path that re-parses that stored text must still accept
-# it.  Schema text was already accepted when it was written; re-reading it is
-# not input arriving from outside.  ALTER TABLE RENAME re-parses it through
-# PARSE_MODE_RENAME, which is why the exemption tests the parse mode and not
-# just the database flags.
-do_execsql_test 11.5.3 {
-  SELECT x FROM v11;
-} {lit}
-do_execsql_test 11.5.4 {
-  ALTER TABLE t11c RENAME TO t11d;
-  ALTER TABLE t11d RENAME TO t11c;
-  SELECT x FROM v11;
-} {lit}
-
-# VACUUM runs a script of its own full of ordinary literals
-do_execsql_test 11.5.5 { VACUUM } {}
-
-# and the schema re-parse at open, with the setting still on
-do_test 11.5.6 {
+# The balancing payload is also refused when it is the first statement on a
+# new connection.
+do_test 11.4.1 {
   db close
-  sqlite3 db test.db
-  sqlite3_db_config db MATCHERTEXT 1
-  execsql {SELECT x FROM v11}
-} {lit}
+  sqlite3 db test11.db
+  list [catch {
+    sqlite3_matchertext_exec db \
+      {SELECT count(*) FROM users WHERE name=?V} V \
+      {)' OR (1=1) AND name<>M'(}
+  } msg] $msg
+} {1 {matchertext argument 1 is not valid matchertext}}
 
-# 11.6: and back off again
+# Complete templates can contain literals and quoted identifiers. Their
+# bounds are inside the checked template, not inside an input argument.
+do_test 11.5.1 {
+  sqlite3_matchertext_exec db {SELECT 'text'}
+} {text}
+do_test 11.5.2 {
+  sqlite3_matchertext_exec db {SELECT M'(text)'}
+} {text}
+do_test 11.5.3 {
+  sqlite3_matchertext_exec db {SELECT [name] FROM [users] ORDER BY [name]}
+} {alice bob}
+do_test 11.5.4 {
+  sqlite3_matchertext_exec db {SELECT "name" FROM "users" ORDER BY "name"}
+} {alice bob}
+do_test 11.5.5 {
+  sqlite3_matchertext_exec db {SELECT `name` FROM `users` ORDER BY `name`}
+} {alice bob}
+
+# Comment bytes are outside matchertext checking. Matcher bytes in real SQL
+# and in an input remain checked.
 do_test 11.6.1 {
-  sqlite3_db_config db MATCHERTEXT 0
-  execsql {SELECT count(*) FROM t11c WHERE n = 'a'}
+  sqlite3_matchertext_exec db {SELECT 1 -- )}
 } {1}
+do_test 11.6.2 {
+  sqlite3_matchertext_exec db "SELECT 2 /* (\[\} */"
+} {2}
+do_test 11.6.3 {
+  list [catch {sqlite3_matchertext_exec db {SELECT (1}} msg] $msg
+} {1 {matchertext template is not valid matchertext}}
+do_test 11.6.4 {
+  list [catch {sqlite3_matchertext_exec db {SELECT ?V} V {-- )}} msg] $msg
+} {1 {matchertext argument 1 is not valid matchertext}}
 
-#-------------------------------------------------------------------------
-# 11.7: rule 2, the text must be matchertext.
-#
-# The application writes the delimiters itself and pastes an untrusted value
-# between them, which is what rule 1 alone leaves open.  A payload that
-# closes the hole and continues in host syntax has to emit the closer, and
-# the closer it emits is unmatched, so the text is not matchertext.
-
-do_test 11.7.0 {
-  sqlite3_db_config db MATCHERTEXT 1
-  execsql {SELECT count(*) FROM t11c}
-} {3}
-
-# The canonical breakout, hand-built hole and all
-foreach {tn payload} {
-  1  {)' OR 1=1 --}
-  2  {)' OR 1=1 ; DROP TABLE t11c --}
-  3  {)' UNION SELECT name FROM sqlite_schema --}
-  4  {)'}
-} {
-  do_test 11.7.$tn {
-    catchsql "SELECT count(*) FROM t11c WHERE n = M'($payload)'"
-  } {1 {SQL is not matchertext: a matcher outside a hole is unmatched}}
-}
-
-# The rule is about the text, not about holes, so an unmatched matcher
-# anywhere in SQL from outside is refused
+# Placeholder syntax, type, count, and statement count are exact.
+do_test 11.7.1 {
+  list [catch {sqlite3_matchertext_exec db {SELECT ?} V x} msg] $msg
+} {1 {matchertext templates require ?V or ?I parameters}}
+do_test 11.7.2 {
+  list [catch {sqlite3_matchertext_exec db {SELECT ?V} I x} msg] $msg
+} {1 {matchertext argument 1 does not match ?V}}
+do_test 11.7.3 {
+  list [catch {sqlite3_matchertext_exec db {SELECT ?V}} msg] $msg
+} {1 {matchertext template has more placeholders than arguments}}
+do_test 11.7.4 {
+  list [catch {sqlite3_matchertext_exec db {SELECT 1} V x} msg] $msg
+} {1 {matchertext template has fewer placeholders than arguments}}
 do_test 11.7.5 {
-  catchsql {SELECT count(*) FROM t11c WHERE n = M'(a)' AND (1=1}
-} {1 {SQL is not matchertext: a matcher outside a hole is unmatched}}
+  list [catch {
+    sqlite3_matchertext_exec db {SELECT 1; SELECT 2}
+  } msg] $msg
+} {1 {matchertext templates must contain one SQL statement}}
 
-# What the application writes through %m always passes, because the encoder's
-# output is matchertext whatever the value was
-foreach {tn payload cnt} {
-  1  {)' OR 1=1 --}  0
-  2  {smile :]}      0
-  3  {a}             1
-} {
-  do_test 11.7.6.$tn {
-    execsql [sqlite3_matchertext_printf \
-        {SELECT count(*) FROM t11c WHERE n = %m} $payload]
-  } $cnt
-}
-
-# 11.8: the boundary.  A payload that balances its own matchers is refused by
-# neither rule: it opens a hole of its own so the trailing delimiter closes
-# it, and the result is a well-formed statement with two empty holes.  No
-# lexical rule separates that from a template the application meant to write,
-# which is why premise A2 belongs to the application and not to the database.
+# An input that is not matchertext cannot bypass the typed input gate.
 do_test 11.8.1 {
-  execsql "SELECT count(*) FROM t11c WHERE n = M'()' OR 1=1 OR n = M'()'"
-} {3}
-do_test 11.8.2 {
-  set payload {)' OR 1=1 OR n = M'(}
-  list [sqlite3_matchertext_verify \
-            "SELECT count(*) FROM t11c WHERE n = M'($payload)'"] \
-       [execsql "SELECT count(*) FROM t11c WHERE n = M'($payload)'"]
-} {1 3}
-# Routed through %m instead, the same payload is inert
-do_test 11.8.3 {
-  execsql [sqlite3_matchertext_printf \
-      {SELECT count(*) FROM t11c WHERE n = %m} {)' OR 1=1 OR n = M'(}]
-} {0}
-
-# 11.9: the rule reaches both holes, and reaches a statement carrying no
-# hole at all, since it is a property of the text rather than of a hole.
-#
-# Each case opens its own connection so that the statement under test is the
-# first one parsed there.  That matters: the mode is read from the header at
-# schema load, which for a cold connection happens only after the parse, so
-# a check made solely during tokenizing would miss exactly these.
-do_test 11.9.0 {
-  db close
-  forcedelete test119.db
-  sqlite3 db test119.db
-  execsql {
-    PRAGMA matchertext=1;
-    CREATE TABLE u(name);
-    INSERT INTO u VALUES(M'(alice)'), (M'(bob)');
-  }
-  db close
-  set res [list]
-  foreach {tn sql} {
-    name    {SELECT count(*) FROM [u] WHERE 1=1 --]}
-    value   {SELECT count(*) FROM u WHERE name = M'()' OR 1=1 --)'}
-    nohole  {SELECT count(*) FROM u WHERE 1=1 --)}
-    opener  {SELECT count(*) FROM u WHERE name = M'(a)' AND (1=1}
-  } {
-    sqlite3 cold test119.db
-    lappend res $tn [catch {cold eval $sql}]
-    cold close
-  }
-  set res
-} {name 1 value 1 nohole 1 opener 1}
-
-# The same connections accept the legitimate spelling of each
-do_test 11.9.1 {
-  set res [list]
-  foreach {tn sql} {
-    name   {SELECT count(*) FROM [u]}
-    value  {SELECT count(*) FROM u WHERE name = M'(alice)'}
-    plain  {SELECT count(*) FROM u}
-  } {
-    sqlite3 cold test119.db
-    lappend res $tn [cold eval $sql]
-    cold close
-  }
-  set res
-} {name 2 value 1 plain 2}
-
-# 11.9.2: a bound parameter is not text, so the rule does not touch it and a
-# value that is not matchertext still binds, encoded on the way in
-do_test 11.9.2 {
-  sqlite3 db test119.db
-  set stmt [sqlite3_prepare_v2 db {SELECT count(*) FROM u WHERE name = ?} -1 tail]
-  sqlite3_bind_text $stmt 1 {smile :]} 8
-  sqlite3_step $stmt
-  set n [sqlite3_column_text $stmt 0]
-  sqlite3_finalize $stmt
-  set n
-} {0}
-
-do_test 11.9.9 {
-  db close
-  sqlite3 db test.db
-  sqlite3_db_config db MATCHERTEXT 0
-  set x 1
-} {1}
+  list [catch {sqlite3_matchertext_exec db {SELECT ?V} V {smile :]}} msg] $msg
+} {1 {matchertext argument 1 is not valid matchertext}}
 
 #-------------------------------------------------------------------------
-# 12.*: Strict mode closes the DQS fallback.
-#
-# The quoted value hole exists in two spellings.  Section 11 shows the
-# single-quoted one refused; DQS is the double-quoted one, where "x" becomes
-# a string when it fails to resolve as a name.  Strict mode masks that
-# fallback, so under it a double-quoted token is a name only, exactly the
-# behavior DQS_DML=0 already gives.
+# 12.*: Internal SQL, schema reload, and DQS.
 
-do_execsql_test 12.0 {
-  CREATE TABLE t12(a);
-  INSERT INTO t12 VALUES('zzz');
-}
-
-# Established by 8.1: with strict mode off, the misfeature is on.  The
-# error is the one DQS_DML=0 produces, hint and all.
 do_test 12.1.1 {
-  sqlite3_db_config db MATCHERTEXT 1
-  catchsql {SELECT "nosuchcol12"}
-} {1 {no such column: "nosuchcol12" - should this be a string literal in single-quotes?}}
+  sqlite3_matchertext_exec db {CREATE VIEW v11 AS SELECT 'lit' AS x}
+  db close
+  sqlite3 db test11.db
+  sqlite3_matchertext_exec db {SELECT x FROM v11}
+} {lit}
+do_test 12.1.2 {
+  sqlite3_matchertext_exec db {ANALYZE}
+} {}
+do_test 12.1.3 {
+  sqlite3_matchertext_exec db {VACUUM}
+} {}
 
-# A double-quoted token that does resolve is a name, and still works
-do_execsql_test 12.1.2 { SELECT "a" FROM t12 } {zzz}
-
-# And the mask lifts with the flag
+# Matchertext builds do not use double-quoted tokens as string literals.
 do_test 12.2.1 {
-  sqlite3_db_config db MATCHERTEXT 0
-  execsql {SELECT "nosuchcol12"}
-} {nosuchcol12}
+  list [catch {
+    sqlite3_matchertext_exec db {SELECT "nosuchcol11"}
+  } msg] $msg
+} {1 {no such column: "nosuchcol11" - should this be a string literal in single-quotes?}}
 
 #-------------------------------------------------------------------------
-# 13.*: PRAGMA matchertext, the database as the authority.
-#
-# The strict mode of section 11 was a connection setting.  The pragma writes
-# the mode into the database header instead, where every connection that
-# opens the file inherits it and none can opt out: the database, not the
-# connection, decides how it is spoken to.
-#
-# Under a strict database, text at rest lives in the encoded domain.  A
-# bound value is canonically encoded on its way in, never refused; the API
-# boundary decodes on the way out; and a literal is canonicalized at parse.
-# One representation at rest is what makes a literal-written value and a
-# bound value compare equal.
+# 13.*: Legacy entry points and removed runtime controls.
 
-do_test 13.0.1 {
-  db close
-  forcedelete test13.db
-  sqlite3 db test13.db
-  execsql {
-    PRAGMA matchertext=1;
-    CREATE TABLE t13(v TEXT);
-  }
-  execsql {PRAGMA matchertext}
-} {1}
+do_test 13.1.1 {
+  list [catch {db eval {CREATE TABLE legacy(x)}} msg] $msg
+} {1 {matchertext requires sqlite3_matchertext_prepare_v3(); pass inputs separately}}
+do_test 13.1.2 {
+  sqlite3_matchertext_exec db {
+    SELECT count(*) FROM sqlite_schema WHERE name=?V
+  } V legacy
+} {0}
+do_test 13.1.3 {
+  list [catch {sqlite3_prepare_v2 db {SELECT 1} -1 tail} msg] $msg
+} {1 {(21) matchertext requires sqlite3_matchertext_prepare_v3(); pass inputs separately}}
 
-# 13.1: strict immediately on the connection that set it
-do_catchsql_test 13.1.1 {
-  SELECT 'raw'
-} {1 {quoted string literal 'raw': use a matchertext literal M'(...)'}}
-
-# 13.2: a fresh connection inherits the mode from the file before its first
-# statement, with no db_config anywhere in sight
+# The removed PRAGMA is unknown, and the removed db_config verb cannot turn
+# matchertext off.
 do_test 13.2.1 {
-  db close
-  sqlite3 db test13.db
-  catchsql {SELECT 'raw'}
-} {1 {quoted string literal 'raw': use a matchertext literal M'(...)'}}
+  sqlite3_matchertext_exec db {PRAGMA matchertext}
+} {}
+do_test 13.2.2 {
+  list [catch {sqlite3_db_config db MATCHERTEXT 0} msg] $msg
+} {1 {unknown sqlite3_db_config setting}}
 
-# 13.3: the connection cannot opt out while the header says on.  The
-# db_config call reports the mode still in force.
-do_test 13.3.1 {
-  sqlite3_db_config db MATCHERTEXT 0
-} {1}
-do_catchsql_test 13.3.2 {
-  SELECT 'raw'
-} {1 {quoted string literal 'raw': use a matchertext literal M'(...)'}}
-
-# 13.4: binding is total.  A value VERIFY refuses is encoded, not rejected,
-# and the API decodes on the way out, so the round trip is exact.
-do_test 13.4.1 {
-  execsql {INSERT INTO t13 VALUES(M'(alice)')}
-  set stmt [sqlite3_prepare_v2 db {INSERT INTO t13 VALUES(?)} -1 tail]
-  sqlite3_bind_text $stmt 1 {smile :]} 8
-  sqlite3_step $stmt
-  sqlite3_finalize $stmt
-  execsql {SELECT v FROM t13 WHERE v LIKE M'(smile%)'}
-} [list {smile :]}]
-
-# What sits at rest is the encoded form, and SQL functions see that domain:
-# length() counts the bytes of smile :\c[].
-do_execsql_test 13.4.2 {
-  SELECT length(v) FROM t13 WHERE v LIKE M'(smile%)'
-} {11}
-
-# 13.5: a literal spelling the same value compares equal to the bound one,
-# because both are canonical at rest
-do_execsql_test 13.5.1 {
-  SELECT count(*) FROM t13 WHERE v = M'(smile :\c[])'
-} {1}
-
-# Canonicalization at parse: a hand-written lone backslash and a bound
-# backslash meet at the same bytes
-do_test 13.5.2 {
-  set stmt [sqlite3_prepare_v2 db {INSERT INTO t13 VALUES(?)} -1 tail]
-  sqlite3_bind_text $stmt 1 "\\" 1
-  sqlite3_step $stmt
-  sqlite3_finalize $stmt
-  execsql {SELECT count(*) FROM t13 WHERE v = M'(\)'}
-} {1}
-
-# 13.6: the file is the authority for turning off as well
-do_test 13.6.1 {
-  execsql {PRAGMA matchertext=0}
-  execsql {SELECT 'raw'}
-} {raw}
+db close
+sqlite3_matchertext_test_bypass 1
+sqlite3 db test.db
 
 #-------------------------------------------------------------------------
 # 14.*: sqlite3_complete().

@@ -1023,10 +1023,10 @@ int sqlite3_step(sqlite3_stmt *pStmt){
     assert( v->expired==0 );
   }
 #ifdef SQLITE_ENABLE_MATCHERTEXT
-  /* Strict mode: decode each text result column at the API boundary.
+  /* Decode matchertext result columns at the API boundary.
   ** Skip internal readers (schema load, VACUUM), which must see the
   ** stored bytes exactly. */
-  if( rc==SQLITE_ROW && (db->flags & SQLITE_MatchertextOnly)!=0
+  if( rc==SQLITE_ROW && sqlite3MatchertextEnabled()
    && db->init.busy==0 && db->nVdbeExec==0
    && v->pResultRow!=0
   ){
@@ -1821,10 +1821,10 @@ static int bindText(
         rc = sqlite3VdbeChangeEncoding(pVar, ENC(p->db));
       }
 #ifdef SQLITE_ENABLE_MATCHERTEXT
-      /* Strict mode: bind the canonical encoding; sqlite3_step() decodes
+      /* Bind the canonical matchertext encoding; sqlite3_step() decodes
       ** on the way out.  Not applied to UTF-16 native databases. */
       if( rc==SQLITE_OK
-       && (p->db->flags & SQLITE_MatchertextOnly)!=0
+       && sqlite3MatchertextEnabled()
        && (pVar->flags & MEM_Str)!=0
        && pVar->enc==SQLITE_UTF8
        && (memchr(pVar->z, '\\', (size_t)pVar->n)!=0

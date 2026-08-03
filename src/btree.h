@@ -158,7 +158,6 @@ int sqlite3BtreeNewDb(Btree *p);
 #define BTREE_USER_VERSION        6
 #define BTREE_INCR_VACUUM         7
 #define BTREE_APPLICATION_ID      8
-#define BTREE_MATCHERTEXT         9  /* Strict matchertext mode */
 #define BTREE_DATA_VERSION        15  /* A virtual meta-value */
 
 /*

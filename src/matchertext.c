@@ -38,6 +38,7 @@
 ** acquire an unmatched matcher when a later stage decodes it.
 */
 #ifdef SQLITE_ENABLE_MATCHERTEXT
+
 #include "sqliteInt.h"
 
 /*
@@ -144,6 +145,57 @@ int sqlite3MatchertextVerify(const unsigned char *z, i64 n){
   /* The scan stops early at an unmatched closer, so requiring that it
   ** consumed every byte is what rejects input such as "a)b". */
   return mtScan(z, n, &nUsed)==0 && nUsed==n;
+}
+
+/* Verify SQL matcher balance without treating comment text as SQL input. */
+int sqlite3MatchertextVerifySql(const unsigned char *z, i64 n){
+  u64 aStk[MT_NWORD];
+  i64 i = 0;
+  int d = 0;
+
+  assert( n>=0 );
+  assert( z!=0 || n==0 );
+  while( i<n ){
+    int j;
+    int tokenType;
+    int nToken = sqlite3GetToken(z+i, &tokenType);
+    if( nToken<=0 || nToken>n-i ) return 0;
+    if( tokenType!=TK_COMMENT ){
+      for(j=0; j<nToken; j++){
+        int k = mtClass(z[i+j]);
+        if( k>0 ){
+          if( d>=SQLITE_MAX_MATCHER_DEPTH ) return 0;
+          MT_PUSH(aStk, d, k);
+          d++;
+        }else if( k<0 ){
+          if( d==0 || MT_TOP(aStk, d)!= -k ) return 0;
+          d--;
+        }
+      }
+    }
+    i += nToken;
+  }
+  return d==0;
+}
+
+/* Legacy SQL entry points remain available only to SQLite's own parsers. */
+int sqlite3MatchertextInternalAllowed(sqlite3 *db){
+  Parse *pParse = db->pParse;
+  return db->init.busy
+      || (db->mDbFlags & DBFLAG_PreferBuiltin)!=0
+      || (pParse!=0 && pParse->eParseMode!=PARSE_MODE_NORMAL);
+}
+
+/* Set the migration error returned by a disabled legacy SQL entry point. */
+int sqlite3MatchertextLegacyError(sqlite3 *db, const char *zReplacement){
+  int rc;
+  if( !sqlite3SafetyCheckOk(db) ) return SQLITE_MISUSE_BKPT;
+  sqlite3_mutex_enter(db->mutex);
+  sqlite3ErrorWithMsg(db, SQLITE_MISUSE,
+      "matchertext requires %s; pass inputs separately", zReplacement);
+  rc = sqlite3ApiExit(db, SQLITE_MISUSE);
+  sqlite3_mutex_leave(db->mutex);
+  return rc;
 }
 
 /*

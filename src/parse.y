@@ -1197,11 +1197,11 @@ term(A) ::= NULL|FLOAT|BLOB(X). {A=tokenExpr(pParse,@X,X); /*A-overwrites-X*/}
 term(A) ::= STRING(X).          {A=tokenExpr(pParse,@X,X); /*A-overwrites-X*/}
 %ifdef SQLITE_ENABLE_MATCHERTEXT
 term(A) ::= MTSTRING(X). {
+  char *zBuf;
   assert( X.n>=5 );        /* The shortest literal is M'()' */
-  if( (pParse->db->flags & SQLITE_MatchertextOnly)!=0 ){
-    /* Strict database: keep the content encoded, canonicalized by a
-    ** decode/re-encode, so literals and bindings compare equal at rest */
-    char *zBuf = sqlite3DbStrNDup(pParse->db, X.z+3, X.n-5);
+  if( sqlite3MatchertextEnabled() ){
+    /* Keep content encoded so matchertext bindings compare equal at rest. */
+    zBuf = sqlite3DbStrNDup(pParse->db, X.z+3, X.n-5);
     A = 0;
     if( zBuf ){
       i64 nDec = sqlite3MatchertextDecodeInPlace(zBuf, (i64)(X.n-5), 1);
@@ -1219,7 +1219,6 @@ term(A) ::= MTSTRING(X). {
       sqlite3DbFree(pParse->db, zBuf);
     }
   }else{
-    /* sqlite3Dequote() strips the M'( )' delimiters and decodes escapes */
     A = sqlite3ExprAlloc(pParse->db, TK_STRING, &X, 0);
     if( A ) sqlite3Dequote(A->u.zToken);
   }
