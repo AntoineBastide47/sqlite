@@ -271,11 +271,14 @@ static int mtUnescape(int c1, int c2, int c3){
 */
 char *sqlite3MatchertextEncode(const char *z, i64 n, i64 *pnOut){
   unsigned char *aEsc;      /* aEsc[i] is true if z[i] must be escaped */
-  int *aStk;                /* Positions of openers not yet matched */
   char *zOut;
-  i64 i, nOut;
+  i64 i, j, nOut;
   int d = 0;
-  int k, j;
+  int k;
+  /* Positions of openers not yet matched.  The depth cap below bounds how
+  ** many there can be, so this is a fixed size rather than one slot per
+  ** input byte.  Positions are i64: an int would truncate past 2 GiB. */
+  i64 aStk[SQLITE_MAX_MATCHER_DEPTH];
 
   assert( n>=0 );
   assert( z!=0 || n==0 );
@@ -288,12 +291,7 @@ char *sqlite3MatchertextEncode(const char *z, i64 n, i64 *pnOut){
   }
 
   aEsc = sqlite3_malloc64((sqlite3_uint64)n);
-  aStk = sqlite3_malloc64((sqlite3_uint64)n * sizeof(int));
-  if( aEsc==0 || aStk==0 ){
-    sqlite3_free(aEsc);
-    sqlite3_free(aStk);
-    return 0;
-  }
+  if( aEsc==0 ) return 0;
   memset(aEsc, 0, (size_t)n);
 
   /* Pass one: find the matchers that are not matched.  Nesting past
@@ -306,7 +304,7 @@ char *sqlite3MatchertextEncode(const char *z, i64 n, i64 *pnOut){
       if( d>=SQLITE_MAX_MATCHER_DEPTH-1 ){
         aEsc[i] = 1;
       }else{
-        aStk[d++] = (int)i;
+        aStk[d++] = i;
       }
     }else if( d>0 && mtClass((unsigned char)z[aStk[d-1]])== -k ){
       d--;
@@ -326,7 +324,6 @@ char *sqlite3MatchertextEncode(const char *z, i64 n, i64 *pnOut){
   zOut = sqlite3_malloc64((sqlite3_uint64)nOut + 1);
   if( zOut==0 ){
     sqlite3_free(aEsc);
-    sqlite3_free(aStk);
     return 0;
   }
   for(i=0, j=0; i<n; i++){
@@ -344,11 +341,10 @@ char *sqlite3MatchertextEncode(const char *z, i64 n, i64 *pnOut){
       zOut[j++] = z[i];
     }
   }
-  assert( (i64)j==nOut );
+  assert( j==nOut );
   zOut[j] = 0;
 
   sqlite3_free(aEsc);
-  sqlite3_free(aStk);
   if( pnOut ) *pnOut = nOut;
   return zOut;
 }
