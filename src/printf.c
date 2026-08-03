@@ -996,12 +996,11 @@ void sqlite3_str_vappendf(
         }
         nVal = (i64)strlen(zVal);
         if( precision>=0 && precision<nVal ) nVal = precision;
-        if( !sqlite3MatchertextVerify((const unsigned char*)zVal, nVal) ){
-          sqlite3StrAccumSetError(pAccum, SQLITE_MISUSE);
-          return;
-        }
-        if( xtype==etESCAPE_m ) sqlite3_str_append(pAccum, "M'(", 3);
-        if( memchr(zVal, '\\', (size_t)nVal)==0 ){
+        if( xtype==etESCAPE_M ){
+          if( !sqlite3MatchertextVerify((const unsigned char*)zVal, nVal) ){
+            sqlite3StrAccumSetError(pAccum, SQLITE_MISUSE);
+            return;
+          }
           sqlite3_str_append(pAccum, zVal, (int)nVal);
         }else{
           i64 nEnc = 0;
@@ -1015,10 +1014,11 @@ void sqlite3_str_vappendf(
             sqlite3StrAccumSetError(pAccum, SQLITE_TOOBIG);
             return;
           }
+          sqlite3_str_append(pAccum, "M'(", 3);
           sqlite3_str_append(pAccum, zEnc, (int)nEnc);
+          sqlite3_str_append(pAccum, ")'", 2);
           sqlite3_free(zEnc);
         }
-        if( xtype==etESCAPE_m ) sqlite3_str_append(pAccum, ")'", 2);
         bufpt = ""; length = width = 0;
         break;
       }

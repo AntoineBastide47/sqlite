@@ -95,6 +95,46 @@ static int SQLITE_TCLAPI test_matchertext_end(
 }
 
 /*
+** Usage:  sqlite3_matchertext_encode VALUE
+**         sqlite3_matchertext_decode VALUE
+**
+** Exercise the public encoder and its inverse.  Values arrive and leave as
+** byte arrays, so zero bytes and invalid UTF-8 survive the trip.
+*/
+static int SQLITE_TCLAPI test_matchertext_recode(
+  void *clientData,
+  Tcl_Interp *interp,
+  int objc,
+  Tcl_Obj *CONST objv[]
+){
+  unsigned char *zVal;
+  Tcl_Size nVal;
+  char *zOut;
+  sqlite3_int64 nOut = 0;
+
+  if( objc!=2 ){
+    Tcl_WrongNumArgs(interp, 1, objv, "VALUE");
+    return TCL_ERROR;
+  }
+  zVal = Tcl_GetByteArrayFromObj(objv[1], &nVal);
+  if( clientData ){
+    zOut = sqlite3_matchertext_decode((const char*)zVal, (sqlite3_int64)nVal,
+                                      &nOut);
+  }else{
+    zOut = sqlite3_matchertext_encode((const char*)zVal, (sqlite3_int64)nVal,
+                                      &nOut);
+  }
+  if( zOut==0 ){
+    Tcl_AppendResult(interp, "out of memory", (char*)0);
+    return TCL_ERROR;
+  }
+  Tcl_SetObjResult(interp,
+      Tcl_NewByteArrayObj((unsigned char*)zOut, (Tcl_Size)nOut));
+  sqlite3_free(zOut);
+  return TCL_OK;
+}
+
+/*
 ** Usage:  sqlite3_matchertext_printf FORMAT ?VALUE ...?
 **
 ** Run sqlite3_mprintf() with up to four string arguments, so that the %m
@@ -142,14 +182,18 @@ int Sqlitetest_matchertext_Init(Tcl_Interp *interp){
   static struct {
     char *zName;
     Tcl_ObjCmdProc *xProc;
+    void *pArg;
   } aObjCmd[] = {
-    { "sqlite3_matchertext_verify", test_matchertext_verify },
-    { "sqlite3_matchertext_end",    test_matchertext_end    },
-    { "sqlite3_matchertext_printf", test_matchertext_printf },
+    { "sqlite3_matchertext_verify", test_matchertext_verify, 0 },
+    { "sqlite3_matchertext_end",    test_matchertext_end,    0 },
+    { "sqlite3_matchertext_printf", test_matchertext_printf, 0 },
+    { "sqlite3_matchertext_encode", test_matchertext_recode, 0 },
+    { "sqlite3_matchertext_decode", test_matchertext_recode, (void*)1 },
   };
   int i;
   for(i=0; i<(int)(sizeof(aObjCmd)/sizeof(aObjCmd[0])); i++){
-    Tcl_CreateObjCommand(interp, aObjCmd[i].zName, aObjCmd[i].xProc, 0, 0);
+    Tcl_CreateObjCommand(interp, aObjCmd[i].zName, aObjCmd[i].xProc,
+                         aObjCmd[i].pArg, 0);
   }
 #endif
   return TCL_OK;

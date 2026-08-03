@@ -3253,6 +3253,26 @@ char *sqlite3_vmprintf(const char*, va_list);
 char *sqlite3_snprintf(int,char*,const char*, ...);
 char *sqlite3_vsnprintf(int,char*,const char*, va_list);
 
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+/*
+** CAPI3REF: Matchertext Encoding
+**
+** ^sqlite3_matchertext_encode() escapes the unmatched matchers and the
+** backslashes in the first N bytes of Z, so that the result is valid
+** matchertext whatever the input was and may be embedded verbatim.
+** ^sqlite3_matchertext_decode() is its inverse.  ^Both return a
+** zero-terminated buffer from [sqlite3_malloc64()], which the caller must
+** [sqlite3_free()], or NULL if the allocation fails, and write the result
+** length to *PN when PN is not NULL.
+**
+** ^A negative N means the input is zero-terminated.  ^Encoding is total:
+** it never refuses a value.  ^The [%m] conversion of [sqlite3_mprintf()]
+** applies the encoder itself, so a caller using it needs neither routine.
+*/
+char *sqlite3_matchertext_encode(const char*,sqlite3_int64,sqlite3_int64*);
+char *sqlite3_matchertext_decode(const char*,sqlite3_int64,sqlite3_int64*);
+#endif
+
 /*
 ** CAPI3REF: Memory Allocation Subsystem
 **

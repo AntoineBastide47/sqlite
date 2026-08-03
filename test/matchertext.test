@@ -755,16 +755,18 @@ do_test 9.3.2 {
 #-------------------------------------------------------------------------
 # 10.*: The write path, %m and %M.
 #
-# Both checks concern the content of one literal and nothing outside it.
+# Both concern the content of one literal and nothing outside it, and they
+# take opposite routes to containment:
 #
-#   %M  one untrusted piece of that content, checked on its own.  This is what
-#       stops a piece pairing with a matcher the caller wrote.
-#   %m  the assembled content, checked as a whole and wrapped as M'(...)'.
-#       This is what catches a caller who left its own matcher unbalanced.
+#   %m  the whole content, encoded and wrapped as M'(...)'.  Encoding is
+#       total, so this conversion never refuses a value.
+#   %M  one untrusted piece of that content, verified and emitted verbatim.
+#       This is the strict route: what cannot embed as it stands is refused,
+#       mprintf returns NULL, and the test command reports "rejected".
 #
-# Neither looks at the surrounding statement.  There is no escaping to fall
-# back on: what cannot embed verbatim is refused, and mprintf returns NULL,
-# which the test command reports as "rejected".
+# %M exists for a caller who writes matchers of its own around the piece and
+# needs the piece to leave them alone; %m exists for the ordinary case, where
+# a free-form value simply has to reach the hole.
 
 # 10.1: %m wraps content that is already matchertext, quotes and all
 foreach {tn val out} {
@@ -777,29 +779,30 @@ foreach {tn val out} {
   do_test 10.1.$tn { sqlite3_matchertext_printf {WHERE n = %m} $val } $out
 }
 
-# 10.2: content that is not matchertext is refused, never escaped
-foreach {tn val} {
-  1  {x) OR 1=1 --}
-  2  {f(x}
-  3  {(a]}
-  4  {smile :]}
-  5  {)(}
+# 10.2: content that could not embed verbatim is escaped, not refused.  Only
+# the unmatched matchers change; everything else is left as it was.
+foreach {tn val out} {
+  1  {x) OR 1=1 --}  {WHERE n = M'(x\c() OR 1=1 --)'}
+  2  {f(x}           {WHERE n = M'(f\o()x)'}
+  3  {(a]}           {WHERE n = M'(\o()a\c[])'}
+  4  {smile :]}      {WHERE n = M'(smile :\c[])'}
+  5  {)(}            {WHERE n = M'(\c()\o())'}
 } {
-  do_test 10.2.$tn { sqlite3_matchertext_printf {WHERE n = %m} $val } {rejected}
+  do_test 10.2.$tn { sqlite3_matchertext_printf {WHERE n = %m} $val } $out
 }
 
-# 10.3: check 2 is about the caller's own text inside the literal.  Here the
-# caller left a '[' unbalanced in its message, so the content cannot embed.
+# 10.3: the caller's own text inside the literal is encoded on the same
+# terms, so an unbalanced '[' in a message is escaped rather than fatal
 do_test 10.3.1 {
   sqlite3_matchertext_printf {VALUES(%m)} {Hi user, x welcome !}
 } {VALUES(M'(Hi user, x welcome !)')}
 do_test 10.3.2 {
   sqlite3_matchertext_printf {VALUES(%m)} {Hi user, x welcome ![}
-} {rejected}
+} {VALUES(M'(Hi user, x welcome !\o[])')}
 
 # 10.4: nothing outside the literal is inspected.  An unbalanced matcher
-# elsewhere in the statement is the caller's business, not this check's: it
-# cannot let a value escape its own hole.
+# elsewhere in the statement is the caller's business: it cannot let a value
+# escape its own hole.
 do_test 10.4.1 {
   sqlite3_matchertext_printf {SELECT ')' FROM t WHERE n=%m} v
 } {SELECT ')' FROM t WHERE n=M'(v)'}
@@ -807,9 +810,9 @@ do_test 10.4.2 {
   sqlite3_matchertext_printf {SELECT ( FROM t WHERE n=%m} v
 } {SELECT ( FROM t WHERE n=M'(v)'}
 
-# 10.5: check 1, %M.  The caller wrote "Hi [" and "] bye" around the piece.
-# A piece carrying ']' would close the caller's '[' and so escape its slot,
-# even though the assembled content balances and check 2 alone would pass it.
+# 10.5: %M, the strict conversion.  The caller wrote "Hi [" and "] bye"
+# around the piece.  A piece carrying ']' would close the caller's '[' and so
+# escape its slot, so it is refused rather than quietly rewritten.
 do_test 10.5.1 { sqlite3_matchertext_printf {Hi [%M] bye} {x}   } {Hi [x] bye}
 do_test 10.5.2 { sqlite3_matchertext_printf {Hi [%M] bye} {[a]} } {Hi [[a]] bye}
 do_test 10.5.3 { sqlite3_matchertext_printf {Hi [%M] bye} {x]y} } {rejected}
@@ -817,8 +820,14 @@ do_test 10.5.4 {
   sqlite3_matchertext_printf {Hi %M bye} {' OR '1'='1}
 } {Hi ' OR '1'='1 bye}
 
-# 10.6: the two levels together.  A piece passes check 1, and the content it
-# lands in still has to pass check 2.
+# %M emits exactly what it was given: no escaping, so a backslash stays one
+# and the caller's matchers keep their partners
+do_test 10.5.5 {
+  sqlite3_matchertext_printf {Hi [%M] bye} "a\\b"
+} "Hi \[a\\b\] bye"
+
+# 10.6: the two together.  A %M piece is verbatim, so content assembled from
+# %M pieces is still raw and %m encodes the result as a whole.
 do_test 10.6.1 {
   sqlite3_matchertext_printf {VALUES(%m)} \
       [sqlite3_matchertext_printf {Hi user, %M welcome !} bob]
@@ -826,14 +835,18 @@ do_test 10.6.1 {
 do_test 10.6.2 {
   set content [sqlite3_matchertext_printf {Hi user, %M welcome ![} bob]
   list $content [sqlite3_matchertext_printf {VALUES(%m)} $content]
-} {{Hi user, bob welcome ![} rejected}
+} {{Hi user, bob welcome ![} {VALUES(M'(Hi user, bob welcome !\o[])')}}
 
-# 10.7: several holes, and one bad piece refuses the whole statement
+# 10.7: several holes
 do_test 10.7.1 {
   sqlite3_matchertext_printf {WHERE a=%m AND b=%m} {p'q} {r(s)}
 } {WHERE a=M'(p'q)' AND b=M'(r(s))'}
 do_test 10.7.2 {
   sqlite3_matchertext_printf {WHERE a=%m AND b=%m} {p'q} {r)s}
+} {WHERE a=M'(p'q)' AND b=M'(r\c()s)'}
+# One bad piece still refuses the whole statement under the strict conversion
+do_test 10.7.3 {
+  sqlite3_matchertext_printf {WHERE a=[%M] AND b=[%M]} {x} {r)s}
 } {rejected}
 
 # 10.8: a NULL value is SQL NULL, as %Q does
@@ -855,13 +868,15 @@ do_test 10.9.2 {
   sqlite3_matchertext_printf {%q | %Q | %w} {a]b} {c]d} {e]f}
 } {a]b | 'c]d' | e]f}
 
-# %m is the one that does not depend on that choice.  It refuses what cannot
-# embed rather than transforming it to suit a context it was not told about.
+# %m does not depend on that choice.  It escapes for the one discipline the
+# sink reads, not for a context it was never told about.
 do_test 10.9.3 {
   sqlite3_matchertext_printf {%m} {c]d}
-} {rejected}
+} {M'(c\c[]d)'}
 
-# 10.10: what %m produces parses, and the value stays data
+# 10.10: what %m produces parses, and the value stays data.  The last two
+# cases could not embed verbatim, so they exercise the encoder end to end:
+# what the reader recovers is the value the caller passed.
 do_execsql_test 10.10.0 {
   CREATE TABLE t10(n);
   INSERT INTO t10 VALUES('alice'), ('bob');
@@ -871,6 +886,8 @@ foreach {tn val cnt} {
   2  {' OR '1'='1}            0
   3  {x'; DROP TABLE t10; --} 0
   4  {p'q}                    0
+  5  {smile :]}               0
+  6  {x) OR 1=1 --}           0
 } {
   do_test 10.10.$tn {
     execsql [sqlite3_matchertext_printf \
@@ -879,23 +896,36 @@ foreach {tn val cnt} {
 }
 do_execsql_test 10.10.9 { SELECT count(*) FROM t10; } {2}
 
-# 10.11: the reader decodes the escape alphabet inside the literal, so the
-# write path escapes backslashes on the way in and the round trip is exact.
-# Both conversions take the raw value; content assembled from %M pieces is
-# already in the encoded domain and is pasted into a literal directly, not
-# passed through %m a second time.
-do_test 10.11.1 {
+# 10.11: the round trip through %m is exact for any value at all.  The
+# reader decodes, so the writer escapes backslashes too, which is what makes
+# a value that already looks like an escape survive as itself.
+foreach {tn val} {
+  1  {a\b}
+  2  {\o()}
+  3  {smile :]}
+  4  {printf("[")}
+  5  {' OR '1'='1}
+  6  {}
+} {
+  do_test 10.11.$tn {
+    execsql [sqlite3_matchertext_printf {SELECT %m} $val]
+  } [list $val]
+}
+
+# What that costs in the SQL text: the escaped spelling, which is longer
+do_test 10.11.7 {
   sqlite3_matchertext_printf {%m} "a\\b"
 } "M'(a\\\\b)'"
-do_test 10.11.2 {
-  sqlite3_matchertext_printf {Hi [%M] bye} "a\\b"
-} "Hi \[a\\\\b\] bye"
-do_test 10.11.3 {
-  execsql [sqlite3_matchertext_printf {SELECT %m} "a\\b"]
-} [list "a\\b"]
-do_test 10.11.4 {
-  execsql [sqlite3_matchertext_printf {SELECT %m} "looks like \\o()"]
-} [list "looks like \\o()"]
+
+# 10.12: the public encoder and its inverse, the same routines %m uses,
+# for a caller placing a value in a hole itself
+do_test 10.12.1 { sqlite3_matchertext_encode {smile :]} } {smile :\c[]}
+do_test 10.12.2 { sqlite3_matchertext_decode {smile :\c[]} } {smile :]}
+do_test 10.12.3 { sqlite3_matchertext_verify [sqlite3_matchertext_encode {f(x}] } 1
+do_test 10.12.4 {
+  sqlite3_matchertext_decode [sqlite3_matchertext_encode {a\o()b}]
+} {a\o()b}
+do_test 10.12.5 { sqlite3_matchertext_encode {} } {}
 
 #-------------------------------------------------------------------------
 # 11.*: SQLITE_DBCONFIG_MATCHERTEXT.

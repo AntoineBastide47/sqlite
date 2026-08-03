@@ -405,4 +405,33 @@ i64 sqlite3MatchertextDecodeInPlace(char *z, i64 n, int bFull){
   return j;
 }
 
+/*
+** Public interfaces to the two routines above, for an application that
+** places a value in a hole itself rather than through the %m conversion.
+** A negative n means the input is zero-terminated.
+*/
+char *sqlite3_matchertext_encode(const char *z, sqlite3_int64 n,
+                                 sqlite3_int64 *pn){
+#ifdef SQLITE_ENABLE_API_ARMOR
+  if( z==0 ){ (void)SQLITE_MISUSE_BKPT; return 0; }
+#endif
+  if( n<0 ) n = (i64)strlen(z);
+  return sqlite3MatchertextEncode(z, n, pn);
+}
+char *sqlite3_matchertext_decode(const char *z, sqlite3_int64 n,
+                                 sqlite3_int64 *pn){
+  char *zOut;
+#ifdef SQLITE_ENABLE_API_ARMOR
+  if( z==0 ){ (void)SQLITE_MISUSE_BKPT; return 0; }
+#endif
+  if( n<0 ) n = (i64)strlen(z);
+  zOut = sqlite3_malloc64((sqlite3_uint64)n + 1);
+  if( zOut==0 ) return 0;
+  if( n>0 ) memcpy(zOut, z, (size_t)n);
+  zOut[n] = 0;
+  n = sqlite3MatchertextDecodeInPlace(zOut, n, 1);
+  if( pn ) *pn = n;
+  return zOut;
+}
+
 #endif /* SQLITE_ENABLE_MATCHERTEXT */
