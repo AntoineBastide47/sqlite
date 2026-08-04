@@ -147,6 +147,13 @@ int sqlite3MatchertextVerify(const unsigned char *z, i64 n){
   return mtScan(z, n, &nUsed)==0 && nUsed==n;
 }
 
+/* The three routines below are host glue rather than scanner: they read the
+** SQLite tokenizer and connection state, so they depend on the full internal
+** header.  SQLITE_MATCHERTEXT_SCANNER_ONLY excludes them, which is what lets
+** the cross-language scanner test compile this file against a stub header and
+** keep the boundary routines self-contained. */
+#ifndef SQLITE_MATCHERTEXT_SCANNER_ONLY
+
 /* Verify SQL matcher balance without treating comment text as SQL input. */
 int sqlite3MatchertextVerifySql(const unsigned char *z, i64 n){
   u64 aStk[MT_NWORD];
@@ -197,6 +204,8 @@ int sqlite3MatchertextLegacyError(sqlite3 *db, const char *zReplacement){
   sqlite3_mutex_leave(db->mutex);
   return rc;
 }
+
+#endif /* SQLITE_MATCHERTEXT_SCANNER_ONLY */
 
 /*
 ** FINDEMBEDEND.  If z[0] opens an embedding "o m c" in zero-terminated text,
