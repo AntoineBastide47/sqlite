@@ -1023,10 +1023,11 @@ int sqlite3_step(sqlite3_stmt *pStmt){
     assert( v->expired==0 );
   }
 #ifdef SQLITE_ENABLE_MATCHERTEXT
-  /* Decode matchertext result columns at the API boundary.
-  ** Skip internal readers (schema load, VACUUM), which must see the
-  ** stored bytes exactly. */
-  if( rc==SQLITE_ROW && sqlite3MatchertextEnabled()
+  /* Decode matchertext result columns at the API boundary.  This is the read
+  ** half of strict mode's encode-at-rest; the additive default stores values
+  ** verbatim, so it does not run.  Skip internal readers (schema load, VACUUM),
+  ** which must see the stored bytes exactly. */
+  if( rc==SQLITE_ROW && sqlite3MatchertextStrict()
    && db->init.busy==0 && db->nVdbeExec==0
    && v->pResultRow!=0
   ){
@@ -1827,7 +1828,7 @@ static int bindText(
       ** the pre-verified argument of a ?V template -- is stored verbatim, so it
       ** is not encoded a second time.  Not applied to UTF-16 native databases. */
       if( rc==SQLITE_OK
-       && sqlite3MatchertextEnabled()
+       && sqlite3MatchertextStrict()
        && (pVar->flags & MEM_Str)!=0
        && pVar->enc==SQLITE_UTF8
        && !sqlite3MatchertextVerify((const unsigned char*)pVar->z,

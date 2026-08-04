@@ -1199,8 +1199,10 @@ term(A) ::= STRING(X).          {A=tokenExpr(pParse,@X,X); /*A-overwrites-X*/}
 term(A) ::= MTSTRING(X). {
   char *zBuf;
   assert( X.n>=5 );        /* The shortest literal is M'()' */
-  if( sqlite3MatchertextEnabled() ){
-    /* Keep content encoded so matchertext bindings compare equal at rest. */
+  if( sqlite3MatchertextStrict() ){
+    /* Strict: keep content encoded so bindings and literals compare equal at
+    ** rest; the API boundary decodes on read.  The additive default instead
+    ** decodes the value at parse, so it is stored and returned verbatim. */
     zBuf = sqlite3DbStrNDup(pParse->db, X.z+3, X.n-5);
     A = 0;
     if( zBuf ){

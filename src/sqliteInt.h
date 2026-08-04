@@ -5990,8 +5990,19 @@ extern int sqlite3MatchertextTestBypass;
 #else
 # define sqlite3MatchertextEnabled() 1
 #endif
+/* Strict mode is opt-in.  Without SQLITE_MATCHERTEXT_STRICT the build is
+** additive: the in-band M'(...)' value hole and [...] name hole are available,
+** but legacy SQL, ordinary quotes, and the standard file format keep working,
+** so the discipline is offered rather than imposed.  Strict mode additionally
+** refuses the legacy string entry points, stores bound values in their encoded
+** form, and stamps a distinct file signature. */
+#ifdef SQLITE_MATCHERTEXT_STRICT
+# define sqlite3MatchertextStrict() sqlite3MatchertextEnabled()
+#else
+# define sqlite3MatchertextStrict() 0
+#endif
 #define sqlite3MatchertextLegacyAllowed(D) \
-  (!sqlite3MatchertextEnabled() || sqlite3MatchertextInternalAllowed(D))
+  (!sqlite3MatchertextStrict() || sqlite3MatchertextInternalAllowed(D))
 #endif
 
 #endif /* SQLITEINT_H */

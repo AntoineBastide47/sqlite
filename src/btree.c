@@ -31,11 +31,12 @@
 */
 static const char zMagicHeader[] = SQLITE_FILE_HEADER;
 
-#if defined(SQLITE_ENABLE_MATCHERTEXT) \
- && (defined(SQLITE_TEST) || defined(SQLITE_MATCHERTEXT_TEST_BYPASS))
-/* Keep stock database fixtures usable under the test-only bypass. */
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+/* Only strict mode stamps the distinct matchertext signature, so the two modes
+** cannot open each other's files.  The additive default keeps the standard
+** header and reads ordinary SQLite databases. */
 static const char *btreeFileHeader(void){
-  return sqlite3MatchertextEnabled() ? zMagicHeader : "SQLite format 3";
+  return sqlite3MatchertextStrict() ? zMagicHeader : "SQLite format 3";
 }
 #else
 # define btreeFileHeader() zMagicHeader
