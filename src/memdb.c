@@ -792,7 +792,11 @@ unsigned char *sqlite3_serialize(
   if( pBt==0 ) goto serialize_out;
   szPage = sqlite3BtreeGetPageSize(pBt);
   zSql = sqlite3_mprintf("PRAGMA \"%w\".page_count", zSchema);
+  /* SQLite's own prepare, not the application's: mark it internal so the
+  ** matchertext gate admits it, the same signal OP_SqlExec uses. */
+  db->nSqlExec++;
   rc = zSql ? sqlite3_prepare_v2(db, zSql, -1, &pStmt, 0) : SQLITE_NOMEM;
+  db->nSqlExec--;
   sqlite3_free(zSql);
   if( rc ) goto serialize_out;
   rc = sqlite3_step(pStmt);
@@ -872,7 +876,10 @@ int sqlite3_deserialize(
   if( zSql==0 ){
     rc = SQLITE_NOMEM;
   }else{
+    /* SQLite's own prepare: mark it internal so the matchertext gate admits it. */
+    db->nSqlExec++;
     rc = sqlite3_prepare_v2(db, zSql, -1, &pStmt, 0);
+    db->nSqlExec--;
     sqlite3_free(zSql);
   }
   if( rc ) goto end_deserialize;

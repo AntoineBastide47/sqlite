@@ -189,6 +189,7 @@ int sqlite3MatchertextVerifySql(const unsigned char *z, i64 n){
 int sqlite3MatchertextInternalAllowed(sqlite3 *db){
   Parse *pParse = db->pParse;
   return db->init.busy
+      || db->nSqlExec                        /* inside OP_SqlExec: SQLite's own SQL */
       || (db->mDbFlags & DBFLAG_PreferBuiltin)!=0
       || (pParse!=0 && pParse->eParseMode!=PARSE_MODE_NORMAL);
 }

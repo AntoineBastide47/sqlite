@@ -1821,15 +1821,17 @@ static int bindText(
         rc = sqlite3VdbeChangeEncoding(pVar, ENC(p->db));
       }
 #ifdef SQLITE_ENABLE_MATCHERTEXT
-      /* Bind the canonical matchertext encoding; sqlite3_step() decodes
-      ** on the way out.  Not applied to UTF-16 native databases. */
+      /* Encode a value that is not already matchertext, so it embeds at rest;
+      ** sqlite3_step() decodes on the way out.  A value that is already valid
+      ** matchertext -- the caller's own sqlite3_matchertext_encode() output, or
+      ** the pre-verified argument of a ?V template -- is stored verbatim, so it
+      ** is not encoded a second time.  Not applied to UTF-16 native databases. */
       if( rc==SQLITE_OK
        && sqlite3MatchertextEnabled()
        && (pVar->flags & MEM_Str)!=0
        && pVar->enc==SQLITE_UTF8
-       && (memchr(pVar->z, '\\', (size_t)pVar->n)!=0
-           || !sqlite3MatchertextVerify((const unsigned char*)pVar->z,
-                                        (i64)pVar->n))
+       && !sqlite3MatchertextVerify((const unsigned char*)pVar->z,
+                                    (i64)pVar->n)
       ){
         i64 nEnc = 0;
         char *zEnc = sqlite3MatchertextEncode(pVar->z, pVar->n, &nEnc);

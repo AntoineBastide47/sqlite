@@ -181,7 +181,14 @@ int sqlite3_matchertext_exec(
   }
   while( (rc = sqlite3_step(pStmt))==SQLITE_ROW ){
     if( xCallback ){
-      for(i=0; i<nCol; i++) az[nCol+i] = (char*)sqlite3_column_text(pStmt, i);
+      for(i=0; i<nCol; i++){
+        az[nCol+i] = (char*)sqlite3_column_text(pStmt, i);
+        if( !az[nCol+i] && sqlite3_column_type(pStmt, i)!=SQLITE_NULL ){
+          sqlite3OomFault(db);
+          rc = SQLITE_NOMEM_BKPT;
+          goto matchertext_exec_out;
+        }
+      }
       az[2*nCol] = 0;
       if( xCallback(pArg, nCol, az+nCol, az) ){
         rc = SQLITE_ABORT;
