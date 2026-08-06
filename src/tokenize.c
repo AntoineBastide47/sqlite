@@ -551,7 +551,7 @@ i64 sqlite3GetToken(const unsigned char *z, int *tokenType){
     }
     case CC_KYWD0: {
 #ifdef SQLITE_ENABLE_MATCHERTEXT
-      /* Check for a M'(value)' is a matchertext literal. */
+      /* Check for a matchertext M'(value)' literal. */
       if( (z[0]|0x20)=='m' && z[1]=='\'' ){
         i = sqlite3MatchertextEnd(z+2);
         if( i>0 && z[2+i]=='\'' ){

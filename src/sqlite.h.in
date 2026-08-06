@@ -3271,8 +3271,10 @@ struct sqlite3_matchertext_arg {
   sqlite3_uint64 size;
 };
 /*
-** CAPI3REF: Matchertext Encoding
+** CAPI3REF: Matchertext Verification and Encoding
 **
+** ^sqlite3_matchertext_verify() returns non-zero if the first N bytes of Z
+** have balanced matcher pairs and zero otherwise.
 ** ^sqlite3_matchertext_encode() escapes the unmatched matchers and the
 ** backslashes in the first N bytes of Z, so that the result is valid
 ** matchertext whatever the input was and may be embedded verbatim.
@@ -3285,6 +3287,7 @@ struct sqlite3_matchertext_arg {
 ** it never refuses a value.  ^The [%m] conversion of [sqlite3_mprintf()]
 ** applies the encoder itself, so a caller using it needs neither routine.
 */
+int sqlite3_matchertext_verify(const char*,sqlite3_int64);
 char *sqlite3_matchertext_encode(const char*,sqlite3_int64,sqlite3_int64*);
 char *sqlite3_matchertext_decode(const char*,sqlite3_int64,sqlite3_int64*);
 #endif
@@ -4371,10 +4374,6 @@ typedef struct sqlite3_stmt sqlite3_stmt;
 int sqlite3_matchertext_prepare_v3(
   sqlite3*, const char*, int, unsigned int,
   const sqlite3_matchertext_arg*, int, sqlite3_stmt**
-);
-int sqlite3_matchertext_exec(
-  sqlite3*, const char*, int, const sqlite3_matchertext_arg*, int,
-  sqlite3_callback, void*, char**
 );
 #endif
 

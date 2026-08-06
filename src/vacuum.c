@@ -34,7 +34,13 @@ static int execSql(sqlite3 *db, char **pzErrMsg, const char *zSql){
   int rc;
 
   /* printf("SQL: [%s]\n", zSql); fflush(stdout); */
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  db->nMatchertextInternal++;
+#endif
   rc = sqlite3_prepare_v2(db, zSql, -1, &pStmt, 0);
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  db->nMatchertextInternal--;
+#endif
   if( rc!=SQLITE_OK ) return rc;
   while( SQLITE_ROW==(rc = sqlite3_step(pStmt)) ){
     const char *zSubSql = (const char*)sqlite3_column_text(pStmt,0);

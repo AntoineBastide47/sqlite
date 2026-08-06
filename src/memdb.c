@@ -792,11 +792,13 @@ unsigned char *sqlite3_serialize(
   if( pBt==0 ) goto serialize_out;
   szPage = sqlite3BtreeGetPageSize(pBt);
   zSql = sqlite3_mprintf("PRAGMA \"%w\".page_count", zSchema);
-  /* SQLite's own prepare, not the application's: mark it internal so the
-  ** matchertext gate admits it, the same signal OP_SqlExec uses. */
-  db->nSqlExec++;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  db->nMatchertextInternal++;
+#endif
   rc = zSql ? sqlite3_prepare_v2(db, zSql, -1, &pStmt, 0) : SQLITE_NOMEM;
-  db->nSqlExec--;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  db->nMatchertextInternal--;
+#endif
   sqlite3_free(zSql);
   if( rc ) goto serialize_out;
   rc = sqlite3_step(pStmt);
@@ -804,7 +806,13 @@ unsigned char *sqlite3_serialize(
     sz = sqlite3_column_int64(pStmt, 0)*szPage;
     if( sz==0 ){
       sqlite3_reset(pStmt);
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+      db->nMatchertextInternal++;
+#endif
       sqlite3_exec(db, "BEGIN IMMEDIATE; COMMIT;", 0, 0, 0);
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+      db->nMatchertextInternal--;
+#endif
       rc = sqlite3_step(pStmt);
       if( rc==SQLITE_ROW ){
         sz = sqlite3_column_int64(pStmt, 0)*szPage;
@@ -876,10 +884,13 @@ int sqlite3_deserialize(
   if( zSql==0 ){
     rc = SQLITE_NOMEM;
   }else{
-    /* SQLite's own prepare: mark it internal so the matchertext gate admits it. */
-    db->nSqlExec++;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+    db->nMatchertextInternal++;
+#endif
     rc = sqlite3_prepare_v2(db, zSql, -1, &pStmt, 0);
-    db->nSqlExec--;
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+    db->nMatchertextInternal--;
+#endif
     sqlite3_free(zSql);
   }
   if( rc ) goto end_deserialize;

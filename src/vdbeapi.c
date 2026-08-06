@@ -1022,30 +1022,6 @@ int sqlite3_step(sqlite3_stmt *pStmt){
     }
     assert( v->expired==0 );
   }
-#ifdef SQLITE_ENABLE_MATCHERTEXT
-  /* Decode matchertext result columns at the API boundary.  This is the read
-  ** half of strict mode's encode-at-rest; the additive default stores values
-  ** verbatim, so it does not run.  Skip internal readers (schema load, VACUUM),
-  ** which must see the stored bytes exactly. */
-  if( rc==SQLITE_ROW && sqlite3MatchertextStrict()
-   && db->init.busy==0 && db->nVdbeExec==0
-   && v->pResultRow!=0
-  ){
-    int i;
-    for(i=0; i<(int)v->nResColumn; i++){
-      Mem *pMem = &v->pResultRow[i];
-      if( (pMem->flags & MEM_Str)==0 ) continue;
-      if( pMem->enc!=SQLITE_UTF8 ) continue;
-      if( pMem->n<2 || memchr(pMem->z, '\\', (size_t)pMem->n)==0 ) continue;
-      if( sqlite3VdbeMemMakeWriteable(pMem)!=SQLITE_OK ){
-        rc = SQLITE_NOMEM_BKPT;
-        break;
-      }
-      pMem->n = (int)sqlite3MatchertextDecodeInPlace(pMem->z, (i64)pMem->n, 1);
-      pMem->flags |= MEM_Term;
-    }
-  }
-#endif
   sqlite3_mutex_leave(db->mutex);
   return rc;
 }
@@ -1821,31 +1797,6 @@ static int bindText(
       if( rc==SQLITE_OK && encoding!=0 ){
         rc = sqlite3VdbeChangeEncoding(pVar, ENC(p->db));
       }
-#ifdef SQLITE_ENABLE_MATCHERTEXT
-      /* Encode a value that is not already matchertext, so it embeds at rest;
-      ** sqlite3_step() decodes on the way out.  A value that is already valid
-      ** matchertext -- the caller's own sqlite3_matchertext_encode() output, or
-      ** the pre-verified argument of a ?V template -- is stored verbatim, so it
-      ** is not encoded a second time.  Not applied to UTF-16 native databases. */
-      if( rc==SQLITE_OK
-       && sqlite3MatchertextStrict()
-       && (pVar->flags & MEM_Str)!=0
-       && pVar->enc==SQLITE_UTF8
-       && !sqlite3MatchertextVerify((const unsigned char*)pVar->z,
-                                    (i64)pVar->n)
-      ){
-        i64 nEnc = 0;
-        char *zEnc = sqlite3MatchertextEncode(pVar->z, pVar->n, &nEnc);
-        if( zEnc==0 ){
-          rc = SQLITE_NOMEM_BKPT;
-        }else if( nEnc>(i64)p->db->aLimit[SQLITE_LIMIT_LENGTH] ){
-          sqlite3_free(zEnc);
-          rc = SQLITE_TOOBIG;
-        }else{
-          rc = sqlite3VdbeMemSetText(pVar, zEnc, nEnc, sqlite3_free);
-        }
-      }
-#endif
       if( rc ){
         sqlite3Error(p->db, rc);
         rc = sqlite3ApiExit(p->db, rc);

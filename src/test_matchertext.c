@@ -48,22 +48,6 @@ static int SQLITE_TCLAPI test_matchertext_bypass(
   return TCL_OK;
 }
 
-static int test_matchertext_exec_cb(
-  void *pArg,
-  int nCol,
-  char **azValue,
-  char **azName
-){
-  Tcl_Obj *pList = (Tcl_Obj*)pArg;
-  int i;
-  UNUSED_PARAMETER(azName);
-  for(i=0; i<nCol; i++){
-    Tcl_ListObjAppendElement(0, pList,
-        azValue[i] ? Tcl_NewStringObj(azValue[i], -1) : Tcl_NewObj());
-  }
-  return 0;
-}
-
 /* Usage: sqlite3_matchertext_exec DB TEMPLATE ?V|I VALUE ...? */
 static int SQLITE_TCLAPI test_matchertext_exec(
   void *clientData,
@@ -73,11 +57,12 @@ static int SQLITE_TCLAPI test_matchertext_exec(
 ){
   sqlite3_matchertext_arg *aArg = 0;
   sqlite3 *db;
+  sqlite3_stmt *pStmt = 0;
+  Tcl_Obj *pError = 0;
   Tcl_Obj *pResult;
   int i;
   int nArg;
   int rc;
-  char *zErr = 0;
   UNUSED_PARAMETER(clientData);
 
   if( objc<3 || (objc&1)==0 ){
@@ -110,17 +95,38 @@ static int SQLITE_TCLAPI test_matchertext_exec(
   }
   pResult = Tcl_NewListObj(0, 0);
   Tcl_IncrRefCount(pResult);
-  rc = sqlite3_matchertext_exec(db, Tcl_GetString(objv[2]), -1,
-      aArg, nArg, test_matchertext_exec_cb, pResult, &zErr);
+  rc = sqlite3_matchertext_prepare_v3(db, Tcl_GetString(objv[2]), -1, 0,
+                                      aArg, nArg, &pStmt);
   sqlite3_free(aArg);
+  while( rc==SQLITE_OK && pStmt ){
+    rc = sqlite3_step(pStmt);
+    if( rc!=SQLITE_ROW ) break;
+    for(i=0; i<sqlite3_column_count(pStmt); i++){
+      const unsigned char *z = sqlite3_column_text(pStmt, i);
+      if( z==0 && sqlite3_column_type(pStmt, i)!=SQLITE_NULL ){
+        rc = SQLITE_NOMEM;
+        break;
+      }
+      Tcl_ListObjAppendElement(0, pResult,
+          z ? Tcl_NewStringObj((const char*)z, -1) : Tcl_NewObj());
+    }
+    if( rc==SQLITE_ROW ) rc = SQLITE_OK;
+  }
+  if( rc==SQLITE_DONE ) rc = SQLITE_OK;
+  if( rc!=SQLITE_OK ){
+    pError = Tcl_NewStringObj(sqlite3_errmsg(db), -1);
+  }
+  if( pStmt ){
+    int rc2 = sqlite3_finalize(pStmt);
+    if( rc==SQLITE_OK ) rc = rc2;
+  }
   if( rc==SQLITE_OK ){
     Tcl_SetObjResult(interp, pResult);
   }else{
     Tcl_SetObjResult(interp,
-        Tcl_NewStringObj(zErr ? zErr : sqlite3_errmsg(db), -1));
+        pError ? pError : Tcl_NewStringObj(sqlite3_errstr(rc), -1));
   }
   Tcl_DecrRefCount(pResult);
-  sqlite3_free(zErr);
   return rc==SQLITE_OK ? TCL_OK : TCL_ERROR;
 }
 
@@ -145,7 +151,7 @@ static int SQLITE_TCLAPI test_matchertext_verify(
   }
   zVal = Tcl_GetByteArrayFromObj(objv[1], &nVal);
   Tcl_SetObjResult(interp,
-      Tcl_NewIntObj(sqlite3MatchertextVerify(zVal, (i64)nVal)));
+      Tcl_NewIntObj(sqlite3_matchertext_verify((const char*)zVal, (i64)nVal)));
   return TCL_OK;
 }
 

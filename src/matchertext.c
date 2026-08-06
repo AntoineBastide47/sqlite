@@ -23,8 +23,8 @@
 **                                for a terminator.
 **
 ** Both are host-independent: they inspect only the six matcher characters
-** and know nothing about SQL.  Nothing in this file allocates memory, and
-** neither routine modifies its input.  That is the point.  A value admitted
+** and know nothing about SQL.  Neither routine allocates memory or modifies
+** its input.  That is the point.  A value admitted
 ** by these checks is admitted by a passive verification, not rewritten by a
 ** content-modifying transformation, so a bug here rejects data that should
 ** have embedded rather than admitting a breakout.
@@ -190,7 +190,7 @@ int sqlite3MatchertextInternalAllowed(sqlite3 *db){
   Parse *pParse = db->pParse;
   return db->init.busy
       || db->nSqlExec                        /* inside OP_SqlExec: SQLite's own SQL */
-      || (db->mDbFlags & DBFLAG_PreferBuiltin)!=0
+      || db->nMatchertextInternal
       || (pParse!=0 && pParse->eParseMode!=PARSE_MODE_NORMAL);
 }
 
@@ -468,6 +468,13 @@ i64 sqlite3MatchertextDecodeInPlace(char *z, i64 n, int bFull){
 ** places a value in a hole itself rather than through the %m conversion.
 ** A negative n means the input is zero-terminated.
 */
+int sqlite3_matchertext_verify(const char *z, sqlite3_int64 n){
+#ifdef SQLITE_ENABLE_API_ARMOR
+  if( z==0 ) return 0;
+#endif
+  if( n<0 ) n = (i64)strlen(z);
+  return sqlite3MatchertextVerify((const unsigned char*)z, n);
+}
 char *sqlite3_matchertext_encode(const char *z, sqlite3_int64 n,
                                  sqlite3_int64 *pn){
 #ifdef SQLITE_ENABLE_API_ARMOR

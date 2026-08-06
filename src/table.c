@@ -127,14 +127,6 @@ int sqlite3_get_table(
 #ifdef SQLITE_ENABLE_API_ARMOR
   if( !sqlite3SafetyCheckOk(db) || pazResult==0 ) return SQLITE_MISUSE_BKPT;
 #endif
-#ifdef SQLITE_ENABLE_MATCHERTEXT
-  if( sqlite3SafetyCheckOk(db) && !sqlite3MatchertextLegacyAllowed(db) ){
-    rc = sqlite3MatchertextLegacyError(db,
-        "sqlite3_matchertext_prepare_v3()");
-    if( pzErrMsg ) *pzErrMsg = sqlite3_mprintf("%s", sqlite3_errmsg(db));
-    return rc;
-  }
-#endif
   *pazResult = 0;
   if( pnColumn ) *pnColumn = 0;
   if( pnRow ) *pnRow = 0;

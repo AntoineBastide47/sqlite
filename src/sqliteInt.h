@@ -1699,6 +1699,9 @@ struct sqlite3 {
   u8 mTrace;                    /* zero or more SQLITE_TRACE flags */
   u8 noSharedCache;             /* True if no shared-cache backends */
   u8 nSqlExec;                  /* Number of pending OP_SqlExec opcodes */
+#ifdef SQLITE_ENABLE_MATCHERTEXT
+  u8 nMatchertextInternal;      /* Internal calls to legacy SQL APIs */
+#endif
   u8 eOpenState;                /* Current condition of the connection */
   u8 nFpDigit;                  /* Significant digits to keep on double->text */
   int nextPagesize;             /* Pagesize after VACUUM if >0 */
@@ -5994,8 +5997,7 @@ extern int sqlite3MatchertextTestBypass;
 ** additive: the in-band M'(...)' value hole and [...] name hole are available,
 ** but legacy SQL, ordinary quotes, and the standard file format keep working,
 ** so the discipline is offered rather than imposed.  Strict mode additionally
-** refuses the legacy string entry points, stores bound values in their encoded
-** form, and stamps a distinct file signature. */
+** refuses the legacy string entry points. */
 #ifdef SQLITE_MATCHERTEXT_STRICT
 # define sqlite3MatchertextStrict() sqlite3MatchertextEnabled()
 #else

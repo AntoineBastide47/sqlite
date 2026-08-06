@@ -338,9 +338,6 @@ columnname(A) ::= nm(A) typetoken(Y). {sqlite3AddColumn(pParse,A,Y);}
 %type nm {Token}
 nm(A) ::= idj(A).
 nm(A) ::= STRING(A).
-%ifdef SQLITE_ENABLE_MATCHERTEXT
-nm(A) ::= MTSTRING(A).
-%endif SQLITE_ENABLE_MATCHERTEXT
 
 // A typetoken is really zero or more tokens that form a type name such
 // as can be found after the column name in a CREATE TABLE statement.
@@ -1197,33 +1194,9 @@ term(A) ::= NULL|FLOAT|BLOB(X). {A=tokenExpr(pParse,@X,X); /*A-overwrites-X*/}
 term(A) ::= STRING(X).          {A=tokenExpr(pParse,@X,X); /*A-overwrites-X*/}
 %ifdef SQLITE_ENABLE_MATCHERTEXT
 term(A) ::= MTSTRING(X). {
-  char *zBuf;
   assert( X.n>=5 );        /* The shortest literal is M'()' */
-  if( sqlite3MatchertextStrict() ){
-    /* Strict: keep content encoded so bindings and literals compare equal at
-    ** rest; the API boundary decodes on read.  The additive default instead
-    ** decodes the value at parse, so it is stored and returned verbatim. */
-    zBuf = sqlite3DbStrNDup(pParse->db, X.z+3, X.n-5);
-    A = 0;
-    if( zBuf ){
-      i64 nDec = sqlite3MatchertextDecodeInPlace(zBuf, (i64)(X.n-5), 1);
-      i64 nEnc = 0;
-      char *zEnc = sqlite3MatchertextEncode(zBuf, nDec, &nEnc);
-      if( zEnc ){
-        Token t;
-        t.z = zEnc;
-        t.n = (unsigned int)nEnc;
-        A = sqlite3ExprAlloc(pParse->db, TK_STRING, &t, 0);
-        sqlite3_free(zEnc);
-      }else{
-        sqlite3OomFault(pParse->db);
-      }
-      sqlite3DbFree(pParse->db, zBuf);
-    }
-  }else{
-    A = sqlite3ExprAlloc(pParse->db, TK_STRING, &X, 0);
-    if( A ) sqlite3Dequote(A->u.zToken);
-  }
+  A = sqlite3ExprAlloc(pParse->db, TK_STRING, &X, 0);
+  if( A ) sqlite3Dequote(A->u.zToken);
   assert( A==0 || (A->pLeft==0 && A->pRight==0) );
   assert( A==0 || (A->flags & (EP_Quoted|EP_DblQuoted))==0 );
 }

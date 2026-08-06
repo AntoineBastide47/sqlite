@@ -248,23 +248,6 @@ do_test 3.1.5 { execsql {SELECT coalesce(NULL, M'(a)')} } {a}
 do_test 3.2.1 { execsql {SELECT typeof(M'(123)')} } {text}
 do_test 3.2.2 { execsql {SELECT M'(123)' + 1} } {124}   ;# by affinity, as '123'+1
 
-# 3.3: the terminal is admitted where an identifier is expected, beside the
-# STRING that may already stand in for a name.  Which of a name or a value it
-# becomes is fixed by grammar position, not by resolution at run time, so the
-# value still never contributes syntax.
-do_execsql_test 3.3.1 {
-  CREATE TABLE M'(t1x)'(x);
-  SELECT count(*) FROM M'(t1x)';
-} {0}
-do_execsql_test 3.3.2 {
-  SELECT 1 AS M'(alias)'
-} {1}
-
-# 3.4: and it names the table it spells, so an absent one is reported by name
-do_catchsql_test 3.4.1 {
-  SELECT 1 FROM M'(nosuchtable)'
-} {1 {no such table: nosuchtable}}
-
 #-------------------------------------------------------------------------
 # 4.*: The value.
 #
@@ -667,7 +650,7 @@ do_test 5.3.2 { execsql {SELECT 'M'} } {M}
 # quoted alias whose first character opens a matcher.
 do_catchsql_test 5.4.1 {
   SELECT x FROM M'(nosuchtable2)'
-} {1 {no such table: nosuchtable2}}
+} {1 {near "M'(nosuchtable2)'": syntax error}}
 
 #-------------------------------------------------------------------------
 # 9.*: Re-parsing.
@@ -753,20 +736,16 @@ do_test 9.3.2 {
 } {SELECT 'y', M'(x)'}
 
 #-------------------------------------------------------------------------
-# 10.*: The write path, %m and %M.
+# 10.*: The write path, %m and VERIFY.
 #
-# Both concern the content of one literal and nothing outside it, and they
-# take opposite routes to containment:
+# Both concern the content of one literal and nothing outside it:
 #
 #   %m  the whole content, encoded and wrapped as M'(...)'.  Encoding is
 #       total, so this conversion never refuses a value.
-#   %M  one untrusted piece of that content, verified and emitted verbatim.
-#       This is the strict route: what cannot embed as it stands is refused,
-#       mprintf returns NULL, and the test command reports "rejected".
+#   VERIFY checks content that a caller wants to emit verbatim. What cannot
+#       embed as it stands is refused before statement construction.
 #
-# %M exists for a caller who writes matchers of its own around the piece and
-# needs the piece to leave them alone; %m exists for the ordinary case, where
-# a free-form value simply has to reach the hole.
+# %m is the ordinary route for a free-form value.
 
 # 10.1: %m wraps content that is already matchertext, quotes and all
 foreach {tn val out} {
@@ -810,32 +789,13 @@ do_test 10.4.2 {
   sqlite3_matchertext_printf {SELECT ( FROM t WHERE n=%m} v
 } {SELECT ( FROM t WHERE n=M'(v)'}
 
-# 10.5: %M, the strict conversion.  The caller wrote "Hi [" and "] bye"
-# around the piece.  A piece carrying ']' would close the caller's '[' and so
-# escape its slot, so it is refused rather than quietly rewritten.
-do_test 10.5.1 { sqlite3_matchertext_printf {Hi [%M] bye} {x}   } {Hi [x] bye}
-do_test 10.5.2 { sqlite3_matchertext_printf {Hi [%M] bye} {[a]} } {Hi [[a]] bye}
-do_test 10.5.3 { sqlite3_matchertext_printf {Hi [%M] bye} {x]y} } {rejected}
-do_test 10.5.4 {
-  sqlite3_matchertext_printf {Hi %M bye} {' OR '1'='1}
-} {Hi ' OR '1'='1 bye}
-
-# %M emits exactly what it was given: no escaping, so a backslash stays one
-# and the caller's matchers keep their partners
-do_test 10.5.5 {
-  sqlite3_matchertext_printf {Hi [%M] bye} "a\\b"
-} "Hi \[a\\b\] bye"
-
-# 10.6: the two together.  A %M piece is verbatim, so content assembled from
-# %M pieces is still raw and %m encodes the result as a whole.
-do_test 10.6.1 {
-  sqlite3_matchertext_printf {VALUES(%m)} \
-      [sqlite3_matchertext_printf {Hi user, %M welcome !} bob]
-} {VALUES(M'(Hi user, bob welcome !)')}
-do_test 10.6.2 {
-  set content [sqlite3_matchertext_printf {Hi user, %M welcome ![} bob]
-  list $content [sqlite3_matchertext_printf {VALUES(%m)} $content]
-} {{Hi user, bob welcome ![} {VALUES(M'(Hi user, bob welcome !\o[])')}}
+# 10.5: VERIFY accepts content that can be emitted verbatim and refuses an
+# unmatched matcher before statement construction.
+do_test 10.5.1 { sqlite3_matchertext_verify {x} } 1
+do_test 10.5.2 { sqlite3_matchertext_verify {[a]} } 1
+do_test 10.5.3 { sqlite3_matchertext_verify {x]y} } 0
+do_test 10.5.4 { sqlite3_matchertext_verify {' OR '1'='1} } 1
+do_test 10.5.5 { sqlite3_matchertext_verify "a\\b" } 1
 
 # 10.7: several holes
 do_test 10.7.1 {
@@ -844,11 +804,6 @@ do_test 10.7.1 {
 do_test 10.7.2 {
   sqlite3_matchertext_printf {WHERE a=%m AND b=%m} {p'q} {r)s}
 } {WHERE a=M'(p'q)' AND b=M'(r\c()s)'}
-# One bad piece still refuses the whole statement under the strict conversion
-do_test 10.7.3 {
-  sqlite3_matchertext_printf {WHERE a=[%M] AND b=[%M]} {x} {r)s}
-} {rejected}
-
 # 10.8: a NULL value is SQL NULL, as %Q does
 do_test 10.8.1 { sqlite3_matchertext_printf {WHERE n = %m} } {WHERE n = NULL}
 
@@ -930,22 +885,21 @@ do_test 10.12.5 { sqlite3_matchertext_encode {} } {}
 #-------------------------------------------------------------------------
 # 11.*: Checked SQL entry and typed composition.
 #
-# A matchertext build has one mode. External SQL enters through
-# sqlite3_matchertext_prepare_v3() or sqlite3_matchertext_exec(). The template
-# uses ?V for a bound text value and ?I for a delimited identifier. Each input
-# is checked before composition.
+# External SQL enters through sqlite3_matchertext_prepare_v3(). The test command
+# below prepares and steps the statement. The template uses ?V for a bound text
+# value and ?I for a delimited identifier. Each input is checked before
+# composition.
 
 db close
 forcedelete test11.db
 sqlite3_matchertext_test_bypass 0
 sqlite3 db test11.db
 
-# Matchertext and standard SQLite files have different signatures. Each mode
-# rejects files from the other mode before it reads the schema.
+# Matchertext changes SQL input handling, not the SQLite file format.
 do_test 11.0.1 {
   sqlite3_matchertext_exec db {CREATE TABLE signature_test(x)}
   hexio_read test11.db 0 16
-} {4D617463686572746578742064623100}
+} {53514C69746520666F726D6174203300}
 do_test 11.0.2 {
   db close
   sqlite3_matchertext_test_bypass 1
@@ -955,7 +909,7 @@ do_test 11.0.2 {
   sqlite3_matchertext_test_bypass 0
   sqlite3 db test11.db
   set res
-} {1 {file is not a database}}
+} {0 {}}
 do_test 11.0.3 {
   forcedelete standard11.db
   sqlite3_matchertext_test_bypass 1
@@ -970,7 +924,7 @@ do_test 11.0.3 {
   standard close
   forcedelete standard11.db
   list $res $msg
-} {1 {file is not a database}}
+} {0 {}}
 
 do_test 11.1.1 {
   sqlite3_matchertext_exec db {CREATE TABLE ?I(name TEXT)} I users
@@ -993,6 +947,12 @@ do_test 11.2.1 {
 do_test 11.2.2 {
   sqlite3_matchertext_exec db {SELECT ?V} V {(safe [value])}
 } {{(safe [value])}}
+do_test 11.2.3 {
+  sqlite3_matchertext_exec db {INSERT INTO users VALUES(?V)} V {a\c()b}
+  sqlite3_matchertext_exec db {
+    SELECT hex(name), name FROM users WHERE hex(name)='615C63282962'
+  }
+} {615C63282962 {a\c()b}}
 
 # Each input is checked before composition. Both value-hole breakouts and the
 # equivalent name-hole breakout fail before SQLite parses the composed SQL.
@@ -1033,13 +993,13 @@ do_test 11.5.2 {
 } {text}
 do_test 11.5.3 {
   sqlite3_matchertext_exec db {SELECT [name] FROM [users] ORDER BY [name]}
-} {alice bob}
+} {{a\c()b} alice bob}
 do_test 11.5.4 {
   sqlite3_matchertext_exec db {SELECT "name" FROM "users" ORDER BY "name"}
-} {alice bob}
+} {{a\c()b} alice bob}
 do_test 11.5.5 {
   sqlite3_matchertext_exec db {SELECT `name` FROM `users` ORDER BY `name`}
-} {alice bob}
+} {{a\c()b} alice bob}
 
 # Comment bytes are outside matchertext checking. Matcher bytes in real SQL
 # and in an input remain checked.
@@ -1095,13 +1055,22 @@ do_test 12.1.2 {
 do_test 12.1.3 {
   sqlite3_matchertext_exec db {VACUUM}
 } {}
+ifcapable deserialize {
+  do_test 12.1.4 {
+    sqlite3_matchertext_exec db {ATTACH ':memory:' AS aux}
+    db deserialize aux [db serialize main]
+    set res [sqlite3_matchertext_exec db {
+      SELECT count(*) FROM aux.sqlite_schema WHERE name=?V
+    } V users]
+    sqlite3_matchertext_exec db {DETACH aux}
+    set res
+  } {1}
+}
 
-# Matchertext builds do not use double-quoted tokens as string literals.
+# DQS remains a separate SQLite setting in strict mode too.
 do_test 12.2.1 {
-  list [catch {
-    sqlite3_matchertext_exec db {SELECT "nosuchcol11"}
-  } msg] $msg
-} {1 {no such column: "nosuchcol11" - should this be a string literal in single-quotes?}}
+  sqlite3_matchertext_exec db {SELECT "nosuchcol11"}
+} {nosuchcol11}
 
 #-------------------------------------------------------------------------
 # 13.*: Legacy entry points and removed runtime controls.
@@ -1279,8 +1248,13 @@ foreach {host sql} $mt15_hosts {
 }
 
 # 15.3: the value survives the round trip whatever it held
-foreach {tn payload} [concat $mt15_unbalanced $mt15_corpus] {
-  do_test 15.3.$tn {
+foreach {tn payload} $mt15_unbalanced {
+  do_test 15.3.unbalanced.$tn {
+    execsql [sqlite3_matchertext_printf {SELECT %m} $payload]
+  } [list $payload]
+}
+foreach {tn payload} $mt15_corpus {
+  do_test 15.3.corpus.$tn {
     execsql [sqlite3_matchertext_printf {SELECT %m} $payload]
   } [list $payload]
 }
@@ -1313,10 +1287,10 @@ do_test 15.5.2 {
   execsql [sqlite3_matchertext_printf \
       {SELECT count(*) FROM t15 WHERE name = %m} {)' OR 1=1 --}]
 } {0}
-# and %M refuses it outright rather than rewriting it
+# and VERIFY refuses it outright rather than rewriting it
 do_test 15.5.3 {
-  sqlite3_matchertext_printf {WHERE name = M'(%M)'} {)' OR 1=1 --}
-} {rejected}
+  sqlite3_matchertext_verify {)' OR 1=1 --}
+} {0}
 
 # 15.6: the name hole, where a bound parameter cannot go.  Encoding is the
 # caller's job here, since no % conversion writes a bracketed name.

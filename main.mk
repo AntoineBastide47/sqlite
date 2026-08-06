@@ -2539,16 +2539,3 @@ show-variables:
 	@echo "B.cc        = $(B.cc)"
 	@echo "T.cc        = $(T.cc)"
 	@echo "T.cc.sqlite = $(T.cc.sqlite)"
-
-matchertext: clean
-	@LDFLAGS="-L/opt/homebrew/lib" ./configure --dev --with-tcl=/opt/homebrew/lib
-	@$(MAKE) testfixture srctree-check sourcetest \
-		OPTS="-DSQLITE_ENABLE_MATCHERTEXT -DSQLITE_MATCHERTEXT_STRICT -DSQLITE_MATCHERTEXT_TEST_BYPASS"
-	@LDFLAGS="-L/opt/homebrew/lib" \
-		OPTS="-DSQLITE_ENABLE_MATCHERTEXT -DSQLITE_MATCHERTEXT_STRICT -DSQLITE_MATCHERTEXT_TEST_BYPASS" \
-		./testfixture $(TOP)/test/testrunner.tcl mdevtest
-
-no-matchertext: clean
-	@LDFLAGS="-L/opt/homebrew/lib" ./configure --dev --with-tcl=/opt/homebrew/lib
-	@$(MAKE) tclextension-install
-	@LDFLAGS="-L/opt/homebrew/lib" $(MAKE) devtest
